@@ -1,0 +1,204 @@
+/* Theme for the JavaFX front-end. The .dark / .light class is toggled on the scene root. */
+
+/* .zm-dialog: dialog panes, which live in their own windows (see Styles.dialog) */
+.root, .zm-dialog {
+    -zm-bg: #fbf8f1;
+    -zm-fg: #26231f;
+    -zm-accent: #9a3b2e;
+    -zm-bar: #ece6d8;
+    -fx-base: #f2efe8;
+    -fx-background: -zm-bg;
+}
+
+.root.dark, .zm-dialog.dark {
+    -zm-bg: #1b1d21;
+    -zm-fg: #dcdad5;
+    -zm-accent: #e0a35e;
+    -zm-bar: #272a30;
+    -fx-base: #2a2d33;
+}
+
+/*
+ * UI text size. Set on the UI containers rather than .root so the story text (sized from the
+ * View menu) is untouched; the map draws its room names and labels itself at fixed sizes.
+ */
+.menu-bar, .context-menu, .tooltip, .zm-side, .zm-dialog {
+    -fx-font-size: 14px;
+}
+
+.zm-story {
+    -fx-background-color: -zm-bg;
+}
+
+.zm-text {
+    -fx-fill: -zm-fg;
+}
+
+.zm-input-text {
+    -fx-fill: -zm-accent;
+}
+
+.zm-status {
+    -fx-background-color: -zm-bar;
+    -fx-padding: 5 14 5 14;
+}
+
+.zm-status .label {
+    -fx-text-fill: -zm-fg;
+    -fx-font-weight: bold;
+}
+
+.zm-input {
+    -fx-background-color: -zm-bar;
+    -fx-text-fill: -zm-fg;
+    -fx-prompt-text-fill: derive(-zm-fg, 55%);
+    -fx-highlight-fill: -zm-accent;
+    -fx-padding: 9 14 9 14;
+}
+
+.zm-input-disabled {
+    -fx-opacity: 0.55;
+}
+
+.zm-prompt {
+    -fx-text-fill: -zm-accent;
+    -fx-font-weight: bold;
+}
+
+/* Side panel: Notes and Map tabs */
+.zm-side {
+    -fx-background-color: -zm-bar;
+}
+
+.zm-side .tab-header-background {
+    -fx-background-color: -zm-bar;
+}
+
+.zm-side .tab .tab-label {
+    -fx-text-fill: -zm-fg;
+}
+
+.zm-side > .tab-header-area > .headers-region > .tab {
+    -fx-padding: 0.3em 0.6em 0.3em 0.6em;
+}
+
+.zm-side .tab .tab-container .tab-label {
+    -fx-alignment: center;
+}
+
+.zm-side .tab:selected .tab-label {
+    -fx-text-fill: -zm-accent;
+    -fx-font-weight: bold;
+}
+
+.zm-side .tab .zm-tab-title {
+    -fx-text-fill: -zm-fg;
+}
+
+.zm-side .tab:selected .zm-tab-title {
+    -fx-text-fill: -zm-accent;
+    -fx-font-weight: bold;
+}
+
+.zm-tab-edit {
+    -fx-background-color: -zm-bg;
+    -fx-text-fill: -zm-fg;
+    -fx-highlight-fill: -zm-accent;
+    -fx-padding: 0 4 0 4;
+}
+
+.zm-notes, .zm-notes .content {
+    -fx-background-color: -zm-bg;
+    -fx-text-fill: -zm-fg;
+    -fx-prompt-text-fill: derive(-zm-fg, 55%);
+    -fx-highlight-fill: -zm-accent;
+    -fx-background-insets: 0;
+    -fx-background-radius: 0;
+}
+
+.zm-notes .content {
+    -fx-padding: 8 10 8 10;
+}
+
+.zm-zoom-bar {
+    -fx-background-color: -zm-bar;
+}
+
+.zm-zoom-level {
+    -fx-text-fill: -zm-fg;
+}
+
+.zm-auto-map {
+    -fx-text-fill: -zm-fg;
+}
+
+.zm-zoom-button {
+    -fx-padding: 2 9 2 9;
+    -fx-min-width: 28;
+}
+
+.zm-map, .zm-map > .viewport, .zm-map-surface {
+    -fx-background-color: -zm-bg;
+    -fx-background-insets: 0;
+    -fx-padding: 0;
+}
+
+.zm-cover, .zm-manual, .zm-manual-surface {
+    -fx-background-color: -zm-bg;
+}
+
+/* a manual page: white paper (even in dark mode, like the PDF itself) with a soft edge */
+.zm-manual-page {
+    -fx-background-color: white;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.25), 6, 0, 0, 1);
+}
+
+.zm-placeholder {
+    -fx-text-fill: derive(-zm-fg, 40%);
+    -fx-text-alignment: center;
+    -fx-padding: 20;
+}
+
+.root.dark .zm-placeholder {
+    -fx-text-fill: derive(-zm-fg, -30%);
+}
+
+/* Cover Art / Game Manual / Hints: how to add the missing file */
+.zm-missing-title {
+    -fx-font-size: 1.3em;
+    -fx-font-weight: bold;
+    -fx-text-fill: -zm-accent;
+}
+
+.zm-missing-text {
+    -fx-text-fill: -zm-fg;
+}
+
+.zm-missing-note {
+    -fx-text-fill: derive(-zm-fg, 40%);
+    -fx-font-style: italic;
+}
+
+.root.dark .zm-missing-note {
+    -fx-text-fill: derive(-zm-fg, -30%);
+}
+
+.zm-missing-path {
+    -fx-background-color: -zm-bar;
+    -fx-text-fill: -zm-fg;
+    -fx-highlight-fill: -zm-accent;
+    -fx-font-family: monospace;
+    -fx-background-radius: 3;
+}
+
+/* File ▸ Preferences section titles */
+.zm-pref-section {
+    -fx-font-weight: bold;
+    -fx-text-fill: -zm-accent;
+}
+
+.zm-scroll, .zm-scroll > .viewport {
+    -fx-background-color: -zm-bg;
+    -fx-background-insets: 0;
+    -fx-padding: 0;
+}

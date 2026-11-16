@@ -1,0 +1,538 @@
+package storyscape.fx;
+
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+import javafx.application.Platform;
+import javafx.beans.binding.Bindings;
+import javafx.beans.property.BooleanProperty;
+import javafx.beans.property.SimpleBooleanProperty;
+import javafx.collections.FXCollections;
+import javafx.geometry.Insets;
+import javafx.geometry.Pos;
+import javafx.scene.control.Alert;
+import javafx.scene.control.Button;
+import javafx.scene.control.ButtonType;
+import javafx.scene.control.CheckBox;
+import javafx.scene.control.ComboBox;
+import javafx.scene.control.ContextMenu;
+import javafx.scene.control.Dialog;
+import javafx.scene.control.Label;
+import javafx.scene.control.ListCell;
+import javafx.scene.control.ListView;
+import javafx.scene.control.MenuItem;
+import javafx.scene.control.Tab;
+import javafx.scene.control.TabPane;
+import javafx.scene.control.TextArea;
+import javafx.scene.control.TextField;
+import javafx.scene.control.Tooltip;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.MouseButton;
+import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.Priority;
+import javafx.scene.layout.Region;
+import javafx.util.Callback;
+
+/**
+ * The panel beside the story: a Notes tab (free text) and one or more Map tabs. Rooms the player
+ * visits go onto the active map only: the map tab selected most recently. Double-clicking a room
+ * opens a new map tab that starts from just that room; the room becomes a circle on both maps, and
+ * clicking either circle shows the other map. Map tab titles can be edited by
+ * double-clicking them (or with Rename… on their context menu). Notes and all maps are written into
+ * saved games as extra Quetzal chunks and restored with them. FX thread only.
+ */
+final class SidePanel extends TabPane {
+    static final String NOTES_CHUNK = "JZnt";
+    static final String MAP_CHUNK = "JZmp";
+    static final String ROOM_NOTES_CHUNK = "JZrn";
+    private static final String DEFAULT_TITLE = "Map";
+    private static final double TAB_WIDTH = 120, TAB_HEIGHT = 30;
+
+    private final TextArea notes = new TextArea();
+    private final Tab notesTab = new Tab("Notes", notes);
+    private final CoverArtView cover = new CoverArtView();
+    private final Tab coverTab = new Tab("Cover Art", cover);
+    private final ManualView manual = ManualView.gameManual();
+    private final Tab manualTab = new Tab("Game Manual", manual);
+    private final ManualView hints = ManualView.hints();
+    private final Tab hintsTab = new Tab("Hints", hints);
+    private final Map<Tab, MapView> maps = new LinkedHashMap<>();
+    /** Auto Map: when false, visiting rooms no longer adds them (or connections) to any map. */
+    private final BooleanProperty autoMap = new SimpleBooleanProperty(true);
+    /** Room notes by room object: shared by every map the room is on, and kept when rooms move. */
+    private final Map<Integer, String> roomNotes = new LinkedHashMap<>();
+    private MapView activeMap;
+    private boolean dark;
+    private int playerLocation = -1;
+    private int nextMapId = 1;
+
+    SidePanel() {
+        getStyleClass().add("zm-side");
+        notes.getStyleClass().add("zm-notes");
+        notes.setWrapText(true);
+        notes.setPromptText("Your notes — saved along with the game.");
+        notesTab.setClosable(false);
+        coverTab.setClosable(false);
+        manualTab.setClosable(false);
+        hintsTab.setClosable(false);
+        getTabs().addAll(coverTab, manualTab, hintsTab, notesTab);   // map tabs follow
+        setTabClosingPolicy(TabClosingPolicy.ALL_TABS);
+        setMinWidth(180);
+        // every tab the same size; long map titles are shortened with "…" (hover for the full title)
+        setTabMinWidth(TAB_WIDTH);
+        setTabMaxWidth(TAB_WIDTH);
+        setTabMinHeight(TAB_HEIGHT);
+
+        getSelectionModel().selectedItemProperty().addListener((obs, oldTab, newTab) -> {
+            MapView m = maps.get(newTab);
+            if (m != null) activeMap = m;
+        });
+        addMap(DEFAULT_TITLE);
+    }
+
+    void setDark(boolean on) {
+        dark = on;
+        for (MapView m : maps.values()) m.setDark(on);
+    }
+
+    /** File ▸ Preferences changed the map's fonts or colours. */
+    void applyAppearance() {
+        for (MapView m : maps.values()) m.applyAppearance();
+    }
+
+    /** A story was opened: show the cover art and manual found beside it (story.jpg, story.pdf). */
+    void setStory(Path story) {
+        cover.show(story);
+        manual.show(story);
+        hints.show(story);
+    }
+
+    /** A different story was opened: start with empty notes and a single empty map. */
+    void clearAll() {
+        notes.clear();
+        roomNotes.clear();
+        resetMaps();
+    }
+
+    /** Back to a single empty map tab (the notes are kept). */
+    void resetMaps() {
+        getTabs().removeAll(maps.keySet());
+        maps.clear();
+        activeMap = null;
+        playerLocation = -1;
+        nextMapId = 1;
+        getSelectionModel().select(addMap(DEFAULT_TITLE));
+    }
+
+    /**
+     * The player is now in {@code object}: add it to the active map (unless Auto Map is off); other
+     * maps, and every map while Auto Map is off, just highlight the room if they already have it.
+     */
+    void locationChanged(int object, String name, String command, boolean travelled) {
+        playerLocation = object;
+        for (MapView m : maps.values()) {
+            if (m == activeMap && autoMap.get()) m.enter(object, name, command, travelled);
+            else m.locate(object);
+        }
+    }
+
+    // ------------------------------------------------------------------ map tabs
+
+    private Tab addMap(String title) {
+        MapView map = new MapView();
+        map.setId(nextMapId++);
+        map.setDark(dark);
+        map.applyAppearance();
+        Tab tab = new Tab(null, withZoomBar(map));
+        setTitle(tab, title);
+        map.setOnRoomDoubleClick((obj, name) -> openMapFrom(map, obj, name));
+        map.setOnPortalClick(this::showMap);
+        map.setOnMoveRequest(objects -> moveRooms(map, objects));
+        map.setMoveAvailable(() -> maps.size() > 1);
+        map.setHasNote(roomNotes::containsKey);
+        map.setOnNoteRequest(this::editRoomNote);
+        tab.setOnCloseRequest(e -> {
+            if (maps.size() <= 1 || !confirmClose(tab)) e.consume();
+        });
+        tab.setOnClosed(e -> discard(tab));
+
+        MenuItem rename = new MenuItem("Rename…");
+        rename.setOnAction(e -> editTitle(tab));
+        MenuItem close = new MenuItem("Close Map");
+        close.setOnAction(e -> {
+            if (maps.size() > 1 && confirmClose(tab)) {
+                getTabs().remove(tab);
+                discard(tab);
+            }
+        });
+        tab.setContextMenu(new ContextMenu(rename, close));
+
+        maps.put(tab, map);
+        getTabs().add(tab);
+        if (activeMap == null) activeMap = map;
+        updateClosable();
+        return tab;
+    }
+
+    /**
+     * The map with a small bar above it: zoom out, zoom level, zoom in and reset on the left, and
+     * the Auto Map toggle (shared by every map tab) on the right.
+     */
+    private BorderPane withZoomBar(MapView map) {
+        Button out = zoomButton("−", "Zoom out (Ctrl/Cmd + scroll down)", map::zoomOut);
+        Button in = zoomButton("+", "Zoom in (Ctrl/Cmd + scroll up)", map::zoomIn);
+        Button reset = zoomButton("Reset", "Reset zoom to 100%", map::resetZoom);
+        Label level = new Label();
+        level.getStyleClass().add("zm-zoom-level");
+        level.setMinWidth(44);
+        level.setAlignment(Pos.CENTER);
+        level.textProperty().bind(Bindings.createStringBinding(
+                () -> Math.round(map.zoomProperty().get() * 100) + "%", map.zoomProperty()));
+        out.disableProperty().bind(map.zoomProperty().lessThanOrEqualTo(MapView.MIN_ZOOM + 1e-9));
+        in.disableProperty().bind(map.zoomProperty().greaterThanOrEqualTo(MapView.MAX_ZOOM - 1e-9));
+        reset.disableProperty().bind(map.zoomProperty().isEqualTo(1.0, 1e-9));
+
+        CheckBox auto = new CheckBox("Auto Map");
+        auto.getStyleClass().add("zm-auto-map");
+        auto.setTooltip(new Tooltip("Add rooms to the selected map as you visit them"));
+        auto.setFocusTraversable(false);
+        auto.selectedProperty().bindBidirectional(autoMap);
+
+        Region spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS);
+        HBox bar = new HBox(4, out, level, in, reset, spacer, auto);
+        bar.setAlignment(Pos.CENTER_LEFT);
+        bar.setPadding(new Insets(4, 8, 4, 8));
+        bar.getStyleClass().add("zm-zoom-bar");
+        return new BorderPane(map, bar, null, null, null);
+    }
+
+    private static Button zoomButton(String text, String tip, Runnable action) {
+        Button b = new Button(text);
+        b.getStyleClass().add("zm-zoom-button");
+        b.setTooltip(new Tooltip(tip));
+        b.setFocusTraversable(false);
+        b.setOnAction(e -> action.run());
+        return b;
+    }
+
+    /**
+     * A room was double-clicked: open a new map tab, named after it, holding only that room. The
+     * room on both maps becomes a circle linked to the other map.
+     */
+    private void openMapFrom(MapView source, int object, String name) {
+        Tab tab = addMap(name);
+        MapView created = maps.get(tab);
+        created.seed(object, name, object == playerLocation, source.id());
+        source.setPortal(object, created.id());
+        getSelectionModel().select(tab);
+    }
+
+    /**
+     * Move was chosen on rooms in {@code source}: ask which map to move them to, then move them
+     * there. Lines between the moved rooms go with them; lines to rooms left behind are dropped.
+     */
+    private void moveRooms(MapView source, List<Integer> objects) {
+        List<Tab> targets = new ArrayList<>();
+        for (Map.Entry<Tab, MapView> e : maps.entrySet()) {
+            if (e.getValue() != source) targets.add(e.getKey());
+        }
+        if (targets.isEmpty() || objects.isEmpty()) return;
+
+        ComboBox<Tab> combo = new ComboBox<>(FXCollections.observableArrayList(targets));
+        Callback<ListView<Tab>, ListCell<Tab>> cells = lv -> new ListCell<>() {
+            @Override protected void updateItem(Tab tab, boolean empty) {
+                super.updateItem(tab, empty);
+                setText(empty || tab == null ? null : title(tab));
+            }
+        };
+        combo.setCellFactory(cells);
+        combo.setButtonCell(cells.call(null));
+        combo.getSelectionModel().selectFirst();
+        combo.setMaxWidth(Double.MAX_VALUE);
+
+        Label prompt = new Label("Map:");
+        HBox row = new HBox(8, prompt, combo);
+        row.setAlignment(Pos.CENTER_LEFT);
+        HBox.setHgrow(combo, Priority.ALWAYS);
+        row.setPadding(new Insets(10, 0, 0, 0));
+        row.setPrefWidth(320);
+
+        Dialog<Tab> dialog = Styles.dialog(new Dialog<>());
+        if (getScene() != null) dialog.initOwner(getScene().getWindow());
+        dialog.setTitle("Move");
+        dialog.setHeaderText(objects.size() == 1
+                ? "Move this room to another map:" : "Move these " + objects.size() + " rooms to another map:");
+        dialog.getDialogPane().setContent(row);
+        dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
+        dialog.setResultConverter(b -> b == ButtonType.OK ? combo.getValue() : null);
+        Platform.runLater(combo::requestFocus);
+
+        dialog.showAndWait().ifPresent(tab -> {
+            MapView target = maps.get(tab);
+            if (target == null) return;
+            target.putRooms(source.takeRooms(objects));
+            validatePortals();                    // circles whose partner room has gone revert to rectangles
+            source.locate(playerLocation);
+            target.locate(playerLocation);
+        });
+    }
+
+    /**
+     * Show the note dialog for a room. OK saves the text; clearing it removes the note (and the
+     * icon). The note belongs to the room, so it shows on every map that has the room.
+     */
+    private void editRoomNote(int object, String name) {
+        TextArea area = new TextArea(roomNotes.getOrDefault(object, ""));
+        area.setWrapText(true);
+        area.setPrefSize(380, 200);
+        area.setPromptText("Notes about this room — saved along with the game.");
+
+        Dialog<String> dialog = Styles.dialog(new Dialog<>());
+        if (getScene() != null) dialog.initOwner(getScene().getWindow());
+        dialog.setTitle("Room Notes");
+        dialog.setHeaderText("Notes for “" + name + "”");
+        dialog.setResizable(true);
+        dialog.getDialogPane().setContent(area);
+        dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
+        dialog.setResultConverter(b -> b == ButtonType.OK ? area.getText() : null);
+        Platform.runLater(() -> {
+            area.requestFocus();
+            area.end();
+        });
+
+        dialog.showAndWait().ifPresent(text -> {
+            if (text.isBlank()) roomNotes.remove(object);
+            else roomNotes.put(object, text.stripTrailing());
+            for (MapView m : maps.values()) m.refreshNotes();
+        });
+    }
+
+    /**
+     * A circle is only kept while its linked map still exists, is a different map, and still holds
+     * the same room; otherwise the room goes back to being a rectangle.
+     */
+    private void validatePortals() {
+        Map<Integer, MapView> byId = new LinkedHashMap<>();
+        for (MapView m : maps.values()) byId.put(m.id(), m);
+        for (MapView m : maps.values()) {
+            m.retainPortals((object, mapId) -> {
+                MapView linked = byId.get(mapId);
+                return linked != null && linked != m && linked.contains(object);
+            });
+        }
+    }
+
+    /** A circle room was clicked: show the map it is linked to. */
+    private void showMap(int mapId) {
+        for (Map.Entry<Tab, MapView> e : maps.entrySet()) {
+            if (e.getValue().id() == mapId) {
+                getSelectionModel().select(e.getKey());
+                return;
+            }
+        }
+    }
+
+    /**
+     * Forget a closed map tab (safe to call twice): rooms linked to it on other maps go back to
+     * rectangles, and the first remaining map takes over if it was active.
+     */
+    private void discard(Tab tab) {
+        MapView map = maps.remove(tab);
+        if (map == null) return;
+        validatePortals();
+        if (activeMap == map) {
+            activeMap = maps.isEmpty() ? null : maps.values().iterator().next();
+        }
+        updateClosable();
+    }
+
+    /** The last remaining map can't be closed. */
+    private void updateClosable() {
+        boolean many = maps.size() > 1;
+        for (Tab t : maps.keySet()) t.setClosable(many);
+    }
+
+    private boolean confirmClose(Tab tab) {
+        Alert alert = Styles.dialog(new Alert(Alert.AlertType.CONFIRMATION,
+                "The rooms on this map will be discarded.", ButtonType.OK, ButtonType.CANCEL));
+        if (getScene() != null) alert.initOwner(getScene().getWindow());
+        alert.setTitle("Close Map");
+        alert.setHeaderText("Close the map “" + title(tab) + "”?");
+        return alert.showAndWait().orElse(ButtonType.CANCEL) == ButtonType.OK;
+    }
+
+    // ------------------------------------------------------------------ editable titles
+
+    private static String title(Tab tab) {
+        return tab.getGraphic() instanceof Label l ? l.getText() : String.valueOf(tab.getText());
+    }
+
+    /** Titles are shown as a Label graphic so a double-click can swap in a text field. */
+    private void setTitle(Tab tab, String title) {
+        Label label = new Label(title);
+        label.getStyleClass().add("zm-tab-title");
+        label.setMaxWidth(TAB_WIDTH - 34);              // room for the close button; longer titles get "…"
+        label.setTooltip(new Tooltip(title));
+        label.setOnMouseClicked(e -> {
+            if (e.getButton() == MouseButton.PRIMARY && e.getClickCount() == 2) editTitle(tab);
+        });
+        tab.setGraphic(label);
+    }
+
+    private void editTitle(Tab tab) {
+        String old = title(tab);
+        TextField field = new TextField(old);
+        field.getStyleClass().add("zm-tab-edit");
+        field.setPrefColumnCount(Math.max(6, Math.min(24, old.length() + 2)));
+        boolean[] done = {false};
+        Runnable commit = () -> {
+            if (done[0]) return;
+            done[0] = true;
+            String t = field.getText().replace('\n', ' ').strip();
+            setTitle(tab, t.isEmpty() ? old : t);
+        };
+        field.setOnAction(e -> commit.run());
+        field.focusedProperty().addListener((obs, was, is) -> {
+            if (!is) commit.run();
+        });
+        field.setOnKeyPressed(e -> {
+            if (e.getCode() == KeyCode.ESCAPE) {
+                done[0] = true;
+                setTitle(tab, old);
+                e.consume();
+            }
+        });
+        tab.setGraphic(field);
+        getSelectionModel().select(tab);
+        Platform.runLater(() -> {
+            field.requestFocus();
+            field.selectAll();
+        });
+    }
+
+    // ------------------------------------------------------------------ persistence
+
+    /**
+     * Notes are UTF-8 text. Maps are stored one after another, each introduced by a "T title" line
+     * and followed by {@link MapView#serialize()}'s lines; "A n" gives the active map's index.
+     */
+    Map<String, byte[]> saveChunks() {
+        Map<String, byte[]> chunks = new LinkedHashMap<>();
+        chunks.put(NOTES_CHUNK, notes.getText().getBytes(StandardCharsets.UTF_8));
+        StringBuilder sb = new StringBuilder();
+        int i = 0, active = 0;
+        for (Map.Entry<Tab, MapView> e : maps.entrySet()) {
+            if (e.getValue() == activeMap) active = i;
+            sb.append("T ").append(title(e.getKey()).replace('\n', ' ')).append('\n');
+            sb.append(new String(e.getValue().serialize(), StandardCharsets.UTF_8));
+            i++;
+        }
+        sb.append("A ").append(active).append('\n');
+        chunks.put(MAP_CHUNK, sb.toString().getBytes(StandardCharsets.UTF_8));
+
+        StringBuilder rn = new StringBuilder();      // one "obj text" line per room, newlines escaped
+        for (Map.Entry<Integer, String> e : roomNotes.entrySet()) {
+            rn.append(e.getKey()).append(' ').append(escape(e.getValue())).append('\n');
+        }
+        chunks.put(ROOM_NOTES_CHUNK, rn.toString().getBytes(StandardCharsets.UTF_8));
+        return chunks;
+    }
+
+    private static String escape(String s) {
+        return s.replace("\\", "\\\\").replace("\r", "").replace("\n", "\\n");
+    }
+
+    private static String unescape(String s) {
+        StringBuilder out = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '\\' && i + 1 < s.length()) {
+                char n = s.charAt(++i);
+                out.append(n == 'n' ? '\n' : n);
+            } else {
+                out.append(c);
+            }
+        }
+        return out.toString();
+    }
+
+    private void restoreRoomNotes(byte[] data) {
+        roomNotes.clear();
+        for (String line : new String(data, StandardCharsets.UTF_8).lines().toList()) {
+            int sp = line.indexOf(' ');
+            if (sp <= 0) continue;
+            try {
+                roomNotes.put(Integer.parseInt(line.substring(0, sp)), unescape(line.substring(sp + 1)));
+            } catch (NumberFormatException ignored) {
+                // skip a damaged line
+            }
+        }
+        for (MapView m : maps.values()) m.refreshNotes();
+    }
+
+    /** Replace notes and maps with those in a restored game; saves without them leave both alone. */
+    void restoreChunks(Map<String, byte[]> chunks) {
+        restoreFrom(chunks);
+        showCoverArt();                                // a restore always ends on the Cover Art tab
+    }
+
+    /** Bring the Cover Art tab to the front (after a story loads or a game is restored). */
+    void showCoverArt() {
+        getSelectionModel().select(coverTab);
+    }
+
+    private void restoreFrom(Map<String, byte[]> chunks) {
+        byte[] n = chunks.get(NOTES_CHUNK);
+        if (n != null) notes.setText(new String(n, StandardCharsets.UTF_8));
+        byte[] rn = chunks.get(ROOM_NOTES_CHUNK);
+        if (rn != null) restoreRoomNotes(rn);
+        byte[] m = chunks.get(MAP_CHUNK);
+        if (m == null) return;
+
+        List<String> titles = new ArrayList<>();
+        List<StringBuilder> bodies = new ArrayList<>();
+        int active = 0;
+        for (String line : new String(m, StandardCharsets.UTF_8).lines().toList()) {
+            if (line.startsWith("T ")) {
+                titles.add(line.substring(2));
+                bodies.add(new StringBuilder());
+            } else if (line.startsWith("A ")) {
+                try {
+                    active = Integer.parseInt(line.substring(2).strip());
+                } catch (NumberFormatException ignored) {
+                    // keep the first map active
+                }
+            } else {
+                if (bodies.isEmpty()) {               // older saves held one untitled map
+                    titles.add(DEFAULT_TITLE);
+                    bodies.add(new StringBuilder());
+                }
+                bodies.get(bodies.size() - 1).append(line).append('\n');
+            }
+        }
+        if (bodies.isEmpty()) {
+            titles.add(DEFAULT_TITLE);
+            bodies.add(new StringBuilder());
+        }
+
+        getTabs().removeAll(maps.keySet());
+        maps.clear();
+        activeMap = null;
+        nextMapId = 1;
+        List<Tab> tabs = new ArrayList<>();
+        for (int i = 0; i < bodies.size(); i++) {
+            Tab tab = addMap(titles.get(i));
+            maps.get(tab).deserialize(bodies.get(i).toString().getBytes(StandardCharsets.UTF_8));
+            tabs.add(tab);
+        }
+        for (MapView mv : maps.values()) nextMapId = Math.max(nextMapId, mv.id() + 1);   // ids came from the save
+        Tab act = tabs.get(Math.max(0, Math.min(tabs.size() - 1, active)));
+        activeMap = maps.get(act);                     // rooms keep going onto the map that was active
+    }
+}

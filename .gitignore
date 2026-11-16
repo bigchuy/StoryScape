@@ -1,0 +1,6 @@
+target/
+*.sav
+*.transcript.txt
+.classpath
+.project
+.settings/

@@ -1,0 +1,46 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "java",
+      "name": "StoryScape GUI (JavaFX, prompt for story file)",
+      "request": "launch",
+      "mainClass": "storyscape.fx.FxLauncher",
+      "projectName": "storyscape",
+      "args": "${input:storyPath}"
+    },
+    {
+      "type": "java",
+      "name": "StoryScape GUI (JavaFX, empty window)",
+      "request": "launch",
+      "mainClass": "storyscape.fx.FxLauncher",
+      "projectName": "storyscape"
+    },
+    {
+      "type": "java",
+      "name": "StoryScape Console (prompt for story file)",
+      "request": "launch",
+      "mainClass": "storyscape.Main",
+      "projectName": "storyscape",
+      "args": "${input:storyPath}",
+      "console": "integratedTerminal"
+    },
+    {
+      "type": "java",
+      "name": "StoryScape Console (plain mode, no ANSI)",
+      "request": "launch",
+      "mainClass": "storyscape.Main",
+      "projectName": "storyscape",
+      "args": "--plain ${input:storyPath}",
+      "console": "integratedTerminal"
+    }
+  ],
+  "inputs": [
+    {
+      "id": "storyPath",
+      "type": "promptString",
+      "description": "Path to a .z3 / .z4 / .z5 / .z8 / .zblorb story file",
+      "default": "games/zork1.z3"
+    }
+  ]
+}
