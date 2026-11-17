@@ -10,7 +10,9 @@ import java.util.Map;
 import javafx.application.Platform;
 import javafx.beans.binding.Bindings;
 import javafx.beans.property.BooleanProperty;
+import javafx.beans.property.DoubleProperty;
 import javafx.beans.property.SimpleBooleanProperty;
+import javafx.beans.property.SimpleDoubleProperty;
 import javafx.collections.FXCollections;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
@@ -39,7 +41,9 @@ import javafx.scene.layout.Region;
 import javafx.util.Callback;
 
 /**
- * The panel beside the story: a Notes tab (free text) and one or more Map tabs. Rooms the player
+ * The panel beside the story: Cover Art, Game Manual, Hints, Notes (free text) and a Map tab. The
+ * Map tab has one zoom control and one Auto Map toggle for all maps; a lone map fills the tab, and
+ * two or more get their own tabs inside it. Rooms the player
  * visits go onto the active map only: the map tab selected most recently. Double-clicking a room
  * opens a new map tab that starts from just that room; the room becomes a circle on both maps, and
  * clicking either circle shows the other map. Map tab titles can be edited by
@@ -61,9 +65,18 @@ final class SidePanel extends TabPane {
     private final Tab manualTab = new Tab("Game Manual", manual);
     private final ManualView hints = ManualView.hints();
     private final Tab hintsTab = new Tab("Hints", hints);
+    /** Each map's own tab (shown in {@link #mapTabs} only while there is more than one map). */
     private final Map<Tab, MapView> maps = new LinkedHashMap<>();
+    /** The inner tab pane holding the maps when there are several. */
+    private final TabPane mapTabs = new TabPane();
+    /** The Map tab's content: the shared zoom / Auto Map bar over the lone map or {@link #mapTabs}. */
+    private final BorderPane mapArea = new BorderPane();
+    private final Tab mapTab = new Tab("Map", mapArea);
     /** Auto Map: when false, visiting rooms no longer adds them (or connections) to any map. */
     private final BooleanProperty autoMap = new SimpleBooleanProperty(true);
+    /** The zoom shared by every map: changing it on one (bar buttons, Ctrl+scroll, pinch) zooms them all. */
+    private final DoubleProperty mapZoom = new SimpleDoubleProperty(1.0);
+    private boolean restoringMaps;           // while true, maps loading their saved zoom don't spread it
     /** Room notes by room object: shared by every map the room is on, and kept when rooms move. */
     private final Map<Integer, String> roomNotes = new LinkedHashMap<>();
     private MapView activeMap;
@@ -80,18 +93,26 @@ final class SidePanel extends TabPane {
         coverTab.setClosable(false);
         manualTab.setClosable(false);
         hintsTab.setClosable(false);
-        getTabs().addAll(coverTab, manualTab, hintsTab, notesTab);   // map tabs follow
-        setTabClosingPolicy(TabClosingPolicy.ALL_TABS);
+        mapTab.setClosable(false);
+        getTabs().addAll(coverTab, manualTab, hintsTab, notesTab, mapTab);
+        setTabClosingPolicy(TabClosingPolicy.UNAVAILABLE);
         setMinWidth(180);
         // every tab the same size; long map titles are shortened with "…" (hover for the full title)
-        setTabMinWidth(TAB_WIDTH);
-        setTabMaxWidth(TAB_WIDTH);
-        setTabMinHeight(TAB_HEIGHT);
+        for (TabPane pane : new TabPane[] {this, mapTabs}) {
+            pane.setTabMinWidth(TAB_WIDTH);
+            pane.setTabMaxWidth(TAB_WIDTH);
+            pane.setTabMinHeight(TAB_HEIGHT);
+        }
 
-        getSelectionModel().selectedItemProperty().addListener((obs, oldTab, newTab) -> {
+        mapTabs.getStyleClass().addAll("zm-side", "zm-map-tabs");
+        mapTabs.setTabClosingPolicy(TabClosingPolicy.ALL_TABS);
+        mapTabs.getSelectionModel().selectedItemProperty().addListener((obs, oldTab, newTab) -> {
             MapView m = maps.get(newTab);
             if (m != null) activeMap = m;
         });
+        mapArea.setTop(mapBar());
+        mapArea.setMinSize(0, 0);
+        mapZoom.addListener((o, a, z) -> applyZoom(z.doubleValue()));
         addMap(DEFAULT_TITLE);
     }
 
@@ -119,26 +140,54 @@ final class SidePanel extends TabPane {
         resetMaps();
     }
 
-    /** Back to a single empty map tab (the notes are kept). */
+    /** Back to a single empty map at 100% (the notes are kept). */
     void resetMaps() {
-        getTabs().removeAll(maps.keySet());
+        removeAllMaps();
+        playerLocation = -1;
+        mapZoom.set(1.0);
+        addMap(DEFAULT_TITLE);
+    }
+
+    private void removeAllMaps() {
+        mapTabs.getTabs().clear();
+        mapArea.setCenter(null);
         maps.clear();
         activeMap = null;
-        playerLocation = -1;
         nextMapId = 1;
-        getSelectionModel().select(addMap(DEFAULT_TITLE));
     }
 
     /**
-     * The player is now in {@code object}: add it to the active map (unless Auto Map is off); other
-     * maps, and every map while Auto Map is off, just highlight the room if they already have it.
+     * The player is now in {@code object}: add it to the active map (unless Auto Map is off), first
+     * switching to the map that holds the room they came from if the active one doesn't (see
+     * {@link #followPlayer}); other maps, and every map while Auto Map is off, just highlight the
+     * room if they already have it.
      */
     void locationChanged(int object, String name, String command, boolean travelled) {
+        int from = playerLocation;
         playerLocation = object;
+        if (autoMap.get() && travelled) followPlayer(from, object);
         for (MapView m : maps.values()) {
             if (m == activeMap && autoMap.get()) m.enter(object, name, command, travelled);
             else m.locate(object);
         }
+    }
+
+    /**
+     * Before a move is mapped: a room that isn't on the selected map yet is only added there if the
+     * room the player came from is on it too. Otherwise the first map that has that room is
+     * selected (its inner tab, if there are several) and the new room goes onto that map instead,
+     * joined to the room it was reached from.
+     */
+    private void followPlayer(int from, int to) {
+        if (activeMap == null || from < 0 || activeMap.contains(to) || activeMap.contains(from)) return;
+        for (Map.Entry<Tab, MapView> e : maps.entrySet()) {
+            if (e.getValue().contains(from)) {
+                activeMap = e.getValue();
+                if (mapTabs.getTabs().contains(e.getKey())) mapTabs.getSelectionModel().select(e.getKey());
+                return;
+            }
+        }
+        // no map has the room the player came from: the new room goes onto the selected map
     }
 
     // ------------------------------------------------------------------ map tabs
@@ -148,7 +197,11 @@ final class SidePanel extends TabPane {
         map.setId(nextMapId++);
         map.setDark(dark);
         map.applyAppearance();
-        Tab tab = new Tab(null, withZoomBar(map));
+        map.zoomTo(mapZoom.get());
+        map.zoomProperty().addListener((o, a, z) -> {
+            if (!restoringMaps) mapZoom.set(z.doubleValue());   // zoomed on this map: zoom them all
+        });
+        Tab tab = new Tab(null, map);
         setTitle(tab, title);
         map.setOnRoomDoubleClick((obj, name) -> openMapFrom(map, obj, name));
         map.setOnPortalClick(this::showMap);
@@ -163,39 +216,76 @@ final class SidePanel extends TabPane {
 
         MenuItem rename = new MenuItem("Rename…");
         rename.setOnAction(e -> editTitle(tab));
-        MenuItem close = new MenuItem("Close Map");
-        close.setOnAction(e -> {
-            if (maps.size() > 1 && confirmClose(tab)) {
-                getTabs().remove(tab);
-                discard(tab);
-            }
-        });
-        tab.setContextMenu(new ContextMenu(rename, close));
+        tab.setContextMenu(new ContextMenu(rename));
 
         maps.put(tab, map);
-        getTabs().add(tab);
         if (activeMap == null) activeMap = map;
-        updateClosable();
+        updateMapLayout();
         return tab;
     }
 
     /**
-     * The map with a small bar above it: zoom out, zoom level, zoom in and reset on the left, and
-     * the Auto Map toggle (shared by every map tab) on the right.
+     * One map fills the Map tab by itself; two or more each get a tab in {@link #mapTabs}. Called
+     * whenever maps are added or removed. The active map stays active (and selected).
      */
-    private BorderPane withZoomBar(MapView map) {
-        Button out = zoomButton("−", "Zoom out (Ctrl/Cmd + scroll down)", map::zoomOut);
-        Button in = zoomButton("+", "Zoom in (Ctrl/Cmd + scroll up)", map::zoomIn);
-        Button reset = zoomButton("Reset", "Reset zoom to 100%", map::resetZoom);
+    private void updateMapLayout() {
+        MapView keep = activeMap;
+        if (maps.size() <= 1) {
+            mapTabs.getTabs().clear();
+            for (Tab t : maps.keySet()) t.setContent(null);   // free the map from its tab first
+            mapArea.setCenter(maps.isEmpty() ? null : maps.values().iterator().next());
+        } else {
+            if (mapArea.getCenter() != mapTabs) mapArea.setCenter(mapTabs);   // frees the lone map
+            for (Map.Entry<Tab, MapView> e : maps.entrySet()) {
+                if (e.getKey().getContent() != e.getValue()) e.getKey().setContent(e.getValue());
+                if (!mapTabs.getTabs().contains(e.getKey())) mapTabs.getTabs().add(e.getKey());
+            }
+            mapTabs.getTabs().retainAll(maps.keySet());
+        }
+        activeMap = keep;
+        Tab t = tabOf(keep);
+        if (t != null && mapTabs.getTabs().contains(t)) mapTabs.getSelectionModel().select(t);
+        for (Tab tab : maps.keySet()) tab.setClosable(maps.size() > 1);   // the last map can't be closed
+    }
+
+    private Tab tabOf(MapView map) {
+        for (Map.Entry<Tab, MapView> e : maps.entrySet()) {
+            if (e.getValue() == map) return e.getKey();
+        }
+        return null;
+    }
+
+    /** Bring a map into view: the Map tab, and its own tab when there are several. */
+    private void selectMap(Tab tab) {
+        getSelectionModel().select(mapTab);
+        if (mapTabs.getTabs().contains(tab)) mapTabs.getSelectionModel().select(tab);
+        else activeMap = maps.get(tab);
+    }
+
+    /** Every map follows the shared zoom (each around the middle of its own view). */
+    private void applyZoom(double z) {
+        for (MapView m : maps.values()) m.zoomTo(z);
+    }
+
+    /**
+     * The bar at the top of the Map tab, shared by every map: zoom out, zoom level, zoom in and
+     * reset on the left, and the Auto Map toggle on the right.
+     */
+    private HBox mapBar() {
+        Button out = zoomButton("−", "Zoom out all maps (Ctrl/Cmd + scroll down)",
+                () -> mapZoom.set(clampZoom(mapZoom.get() / MapView.ZOOM_STEP)));
+        Button in = zoomButton("+", "Zoom in all maps (Ctrl/Cmd + scroll up)",
+                () -> mapZoom.set(clampZoom(mapZoom.get() * MapView.ZOOM_STEP)));
+        Button reset = zoomButton("Reset", "Reset zoom to 100%", () -> mapZoom.set(1.0));
         Label level = new Label();
         level.getStyleClass().add("zm-zoom-level");
         level.setMinWidth(44);
         level.setAlignment(Pos.CENTER);
         level.textProperty().bind(Bindings.createStringBinding(
-                () -> Math.round(map.zoomProperty().get() * 100) + "%", map.zoomProperty()));
-        out.disableProperty().bind(map.zoomProperty().lessThanOrEqualTo(MapView.MIN_ZOOM + 1e-9));
-        in.disableProperty().bind(map.zoomProperty().greaterThanOrEqualTo(MapView.MAX_ZOOM - 1e-9));
-        reset.disableProperty().bind(map.zoomProperty().isEqualTo(1.0, 1e-9));
+                () -> Math.round(mapZoom.get() * 100) + "%", mapZoom));
+        out.disableProperty().bind(mapZoom.lessThanOrEqualTo(MapView.MIN_ZOOM + 1e-9));
+        in.disableProperty().bind(mapZoom.greaterThanOrEqualTo(MapView.MAX_ZOOM - 1e-9));
+        reset.disableProperty().bind(mapZoom.isEqualTo(1.0, 1e-9));
 
         CheckBox auto = new CheckBox("Auto Map");
         auto.getStyleClass().add("zm-auto-map");
@@ -209,7 +299,13 @@ final class SidePanel extends TabPane {
         bar.setAlignment(Pos.CENTER_LEFT);
         bar.setPadding(new Insets(4, 8, 4, 8));
         bar.getStyleClass().add("zm-zoom-bar");
-        return new BorderPane(map, bar, null, null, null);
+        return bar;
+    }
+
+    /** The same limits and snap-to-100% as zooming a map directly. */
+    private static double clampZoom(double z) {
+        z = Math.max(MapView.MIN_ZOOM, Math.min(MapView.MAX_ZOOM, z));
+        return Math.abs(z - 1) < 0.02 ? 1 : z;
     }
 
     private static Button zoomButton(String text, String tip, Runnable action) {
@@ -230,12 +326,13 @@ final class SidePanel extends TabPane {
         MapView created = maps.get(tab);
         created.seed(object, name, object == playerLocation, source.id());
         source.setPortal(object, created.id());
-        getSelectionModel().select(tab);
+        selectMap(tab);
     }
 
     /**
      * Move was chosen on rooms in {@code source}: ask which map to move them to, then move them
-     * there. Lines between the moved rooms go with them; lines to rooms left behind are dropped.
+     * there. Every line touching them goes too: a line to a room left behind ends at a copy of
+     * that room on the target map, and the two become circles linked to each other's map.
      */
     private void moveRooms(MapView source, List<Integer> objects) {
         List<Tab> targets = new ArrayList<>();
@@ -276,7 +373,10 @@ final class SidePanel extends TabPane {
         dialog.showAndWait().ifPresent(tab -> {
             MapView target = maps.get(tab);
             if (target == null) return;
-            target.putRooms(source.takeRooms(objects));
+            // every line goes along; rooms left behind at a line's far end become linked circles
+            for (int end : target.putRooms(source.takeRooms(objects), source.id())) {
+                source.linkIfFree(end, target.id());
+            }
             validatePortals();                    // circles whose partner room has gone revert to rectangles
             source.locate(playerLocation);
             target.locate(playerLocation);
@@ -332,7 +432,7 @@ final class SidePanel extends TabPane {
     private void showMap(int mapId) {
         for (Map.Entry<Tab, MapView> e : maps.entrySet()) {
             if (e.getValue().id() == mapId) {
-                getSelectionModel().select(e.getKey());
+                selectMap(e.getKey());
                 return;
             }
         }
@@ -347,15 +447,11 @@ final class SidePanel extends TabPane {
         if (map == null) return;
         validatePortals();
         if (activeMap == map) {
-            activeMap = maps.isEmpty() ? null : maps.values().iterator().next();
+            Tab shown = mapTabs.getSelectionModel().getSelectedItem();
+            activeMap = maps.containsKey(shown) ? maps.get(shown)
+                    : maps.isEmpty() ? null : maps.values().iterator().next();
         }
-        updateClosable();
-    }
-
-    /** The last remaining map can't be closed. */
-    private void updateClosable() {
-        boolean many = maps.size() > 1;
-        for (Tab t : maps.keySet()) t.setClosable(many);
+        updateMapLayout();                             // back to a lone map when only one is left
     }
 
     private boolean confirmClose(Tab tab) {
@@ -409,7 +505,7 @@ final class SidePanel extends TabPane {
             }
         });
         tab.setGraphic(field);
-        getSelectionModel().select(tab);
+        mapTabs.getSelectionModel().select(tab);
         Platform.runLater(() -> {
             field.requestFocus();
             field.selectAll();
@@ -521,18 +617,26 @@ final class SidePanel extends TabPane {
             bodies.add(new StringBuilder());
         }
 
-        getTabs().removeAll(maps.keySet());
-        maps.clear();
-        activeMap = null;
-        nextMapId = 1;
+        removeAllMaps();
         List<Tab> tabs = new ArrayList<>();
-        for (int i = 0; i < bodies.size(); i++) {
-            Tab tab = addMap(titles.get(i));
-            maps.get(tab).deserialize(bodies.get(i).toString().getBytes(StandardCharsets.UTF_8));
-            tabs.add(tab);
+        restoringMaps = true;                          // each map loads its own saved zoom: don't spread it yet
+        try {
+            for (int i = 0; i < bodies.size(); i++) {
+                Tab tab = addMap(titles.get(i));
+                maps.get(tab).deserialize(bodies.get(i).toString().getBytes(StandardCharsets.UTF_8));
+                tabs.add(tab);
+            }
+        } finally {
+            restoringMaps = false;
         }
         for (MapView mv : maps.values()) nextMapId = Math.max(nextMapId, mv.id() + 1);   // ids came from the save
         Tab act = tabs.get(Math.max(0, Math.min(tabs.size() - 1, active)));
         activeMap = maps.get(act);                     // rooms keep going onto the map that was active
+        if (mapTabs.getTabs().contains(act)) mapTabs.getSelectionModel().select(act);
+
+        // the active map's saved zoom becomes the shared zoom (older saves could differ per map)
+        double z = activeMap.zoomProperty().get();
+        mapZoom.set(z);
+        applyZoom(z);
     }
 }

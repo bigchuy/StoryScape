@@ -159,11 +159,8 @@ final class MapView extends ScrollPane {
     /** The current zoom factor (1 = 100%); read-only for callers, change it with the methods below. */
     ReadOnlyDoubleProperty zoomProperty() { return zoom; }
 
-    void zoomIn() { zoomAroundCentre(zoom.get() * ZOOM_STEP); }
-
-    void zoomOut() { zoomAroundCentre(zoom.get() / ZOOM_STEP); }
-
-    void resetZoom() { zoomAroundCentre(1.0); }
+    /** Zoom to {@code z} (clamped) around the middle of the view: how the shared zoom reaches every map. */
+    void zoomTo(double z) { zoomAroundCentre(z); }
 
     private void zoomAroundCentre(double z) {
         Bounds vp = getViewportBounds();
@@ -325,17 +322,19 @@ final class MapView extends ScrollPane {
     /** Decides whether Move is offered (there must be another map to move to). */
     void setMoveAvailable(BooleanSupplier available) { moveAvailable = available; }
 
-    /** Rooms lifted off one map, with the lines that ran between them, ready for {@link #putRooms}. */
+    /**
+     * Rooms lifted off one map with every line that touched them, ready for {@link #putRooms}.
+     * {@code neighbours} are copies of the rooms left behind at the far end of those lines.
+     */
     static final class Transfer {
         private final List<Room> rooms = new ArrayList<>();
         private final List<Link> links = new ArrayList<>();
-
-        int size() { return rooms.size(); }
+        private final List<Room> neighbours = new ArrayList<>();
     }
 
     /**
-     * Remove these rooms from this map. Lines between two of them travel with them; lines to rooms
-     * that stay behind are dropped, since a line can't span two maps.
+     * Remove these rooms from this map, with every line that touches them. A line to a room that
+     * stays behind travels too, along with a copy of that room for it to end at.
      */
     Transfer takeRooms(List<Integer> objects) {
         Transfer t = new Transfer();
@@ -347,10 +346,16 @@ final class MapView extends ScrollPane {
             t.rooms.add(r);
             selectedRooms.remove(r);
         }
+        Set<Integer> copied = new LinkedHashSet<>();
         links.values().removeIf(l -> {
             boolean a = moving.contains(l.a), b = moving.contains(l.b);
-            if (a && b) t.links.add(l);
-            return a || b;
+            if (!a && !b) return false;
+            t.links.add(l);
+            Room other = a == b ? null : rooms.get(a ? l.b : l.a);   // the end that stays here
+            if (other != null && copied.add(other.object)) {
+                t.neighbours.add(new Room(other.object, other.name, other.x, other.y));
+            }
+            return true;
         });
         if (moving.contains(current)) current = -1;
         if (selected instanceof Room r && moving.contains(r.object)
@@ -363,17 +368,57 @@ final class MapView extends ScrollPane {
     }
 
     /**
-     * Add rooms taken from another map, keeping their layout. They go to the right of this map's
-     * rooms so nothing overlaps. A room that is already here is not duplicated. The moved rooms
-     * end up selected.
+     * Add rooms taken from map {@code fromMap}, keeping their layout and every line that touched
+     * them. They go to the right of this map's rooms so nothing overlaps. A room that is already
+     * here is not duplicated. A line's far end that isn't on this map yet arrives as a copy of
+     * that room, drawn as a circle linked back to {@code fromMap}. The moved rooms end up selected.
+     *
+     * @return the rooms left behind on {@code fromMap} that lines now lead to from this map, so
+     *         that map can link them here
      */
-    void putRooms(Transfer t) {
+    List<Integer> putRooms(Transfer t, int fromMap) {
         List<Room> incoming = new ArrayList<>();
         for (Room r : t.rooms) if (!rooms.containsKey(r.object)) incoming.add(r);
-        if (incoming.isEmpty()) return;
+        List<Room> stubs = new ArrayList<>();
+        List<Integer> ends = new ArrayList<>();
+        for (Room n : t.neighbours) {
+            ends.add(n.object);
+            Room here = rooms.get(n.object);
+            if (here == null) {
+                n.portal = fromMap;
+                stubs.add(n);
+            } else if (here.portal == 0) {
+                here.portal = fromMap;               // already here: just link it back
+            }
+        }
 
+        List<Room> placed = new ArrayList<>(incoming);
+        placed.addAll(stubs);
+        if (!placed.isEmpty()) placeGroup(placed);
+        if (!incoming.isEmpty()) {
+            selectedRooms.clear();
+            selectedRooms.addAll(incoming);
+            selected = incoming.get(0);
+        }
+        for (Link l : t.links) {
+            if (rooms.containsKey(l.a) && rooms.containsKey(l.b)) links.putIfAbsent(linkKey(l.a, l.b), l);
+        }
+        relayout();
+        return ends;
+    }
+
+    /** Link a room to map {@code mapId} (it becomes a circle) unless it is already linked elsewhere. */
+    void linkIfFree(int object, int mapId) {
+        Room r = rooms.get(object);
+        if (r == null || r.portal != 0) return;
+        r.portal = mapId;
+        relayout();
+    }
+
+    /** Add rooms from another map as one block, shifted to the right of this map's rooms. */
+    private void placeGroup(List<Room> group) {
         double gx0 = Double.MAX_VALUE, gy0 = Double.MAX_VALUE, gx1 = -Double.MAX_VALUE, gy1 = -Double.MAX_VALUE;
-        for (Room r : incoming) {
+        for (Room r : group) {
             gx0 = Math.min(gx0, r.x - halfW(r));
             gy0 = Math.min(gy0, r.y - halfH(r));
             gx1 = Math.max(gx1, r.x + halfW(r));
@@ -393,18 +438,11 @@ final class MapView extends ScrollPane {
             dy = ey0 - gy0;
         }
 
-        selectedRooms.clear();
-        for (Room r : incoming) {
+        for (Room r : group) {
             r.x += dx;
             r.y += dy;
             rooms.put(r.object, r);
-            selectedRooms.add(r);
         }
-        selected = incoming.get(0);
-        for (Link l : t.links) {
-            if (rooms.containsKey(l.a) && rooms.containsKey(l.b)) links.putIfAbsent(linkKey(l.a, l.b), l);
-        }
-        relayout();
     }
 
     private void showRoomMenu(ContextMenuEvent e) {

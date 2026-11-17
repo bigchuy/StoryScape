@@ -157,7 +157,10 @@ public final class FxApp extends Application {
                 new SeparatorMenuItem(),
                 proportional);
 
-        Menu help = new Menu("Help", null, item("About", null, this::about));
+        Menu help = new Menu("Help", null,
+                item("Map Help…", null, () -> MapHelpDialog.show(stage)),
+                new SeparatorMenuItem(),
+                item("About", null, this::about));
         return new MenuBar(file, viewMenu, help);
     }
 
