@@ -70,6 +70,9 @@ public interface ZIO {
     /** Extra IFF chunks (4-character id to contents) to store in a saved game. */
     default Map<String, byte[]> extraSaveChunks() { return Map.of(); }
 
+    /** A game was saved successfully to {@code file} (the front end may save its own data too). */
+    default void gameSaved(String file) {}
+
     /** Chunks from a restored game that the interpreter itself does not understand. */
     default void restoreExtraChunks(Map<String, byte[]> chunks) {}
 }

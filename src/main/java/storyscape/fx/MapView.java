@@ -27,6 +27,7 @@ import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.control.ContextMenu;
 import javafx.scene.control.MenuItem;
 import javafx.scene.control.ScrollPane;
+import javafx.scene.control.SeparatorMenuItem;
 import javafx.scene.input.ContextMenuEvent;
 import javafx.scene.input.MouseButton;
 import javafx.scene.input.MouseEvent;
@@ -54,7 +55,7 @@ final class MapView extends ScrollPane {
     private static final double BOX_W = 130, BOX_H = 42;
     private static final double CIRCLE_D = 84;             // rooms linked to another map are circles
     private static final double GAP_X = 20, GAP_Y = 30;   // minimum space kept around a new room
-    private static final double MARGIN = 30;
+    private static final double MARGIN = 60;               // space around the map's contents
     private static final double LABEL_GAP = 16;          // distance from a room's edge to its label
     // room name and label fonts come from File ▸ Preferences: Appearance.mapFont() and friends
 
@@ -136,6 +137,10 @@ final class MapView extends ScrollPane {
         canvas.setOnMouseDragged(this::onDragged);
         canvas.setOnMouseReleased(this::onReleased);
         canvas.setOnContextMenuRequested(this::showRoomMenu);
+        // a left click anywhere on the map closes an open right-click menu
+        addEventFilter(MouseEvent.MOUSE_PRESSED, e -> {
+            if (e.getButton() == MouseButton.PRIMARY) hideMenu();
+        });
         canvas.setOnMouseMoved(e -> {
             double x = mapX(e.getX()), y = mapY(e.getY());
             canvas.setCursor(noteHit(x, y) != null ? Cursor.HAND
@@ -445,9 +450,202 @@ final class MapView extends ScrollPane {
         }
     }
 
+    // ------------------------------------------------------------------ adding rooms by hand
+
+    /**
+     * A request to add a room by hand at map point (x, y). {@code linkTo} is the selected room to
+     * join it to (null for none), and {@code linkToName} that room's name.
+     */
+    record AddRequest(double x, double y, Integer linkTo, String linkToName) {}
+
+    private BooleanSupplier manualEditing = () -> false;
+    private Consumer<AddRequest> onAddRequest = r -> { };
+    private double rightX = Double.NaN, rightY = Double.NaN;   // where the right button went down
+
+    /** Decides whether the empty-space menu (Add Room…) is offered: only while Auto Map is off. */
+    void setManualEditing(BooleanSupplier allowed) { manualEditing = allowed; }
+
+    /** Called when the user picks Add Room… or Add Room Linked to … on the empty-space menu. */
+    void setOnAddRequest(Consumer<AddRequest> handler) { onAddRequest = handler; }
+
+    /** The lowest object number on this map (0 when it has no rooms): hand-made rooms use negative ones. */
+    int minObject() {
+        int min = 0;
+        for (int obj : rooms.keySet()) min = Math.min(min, obj);
+        return min;
+    }
+
+    /**
+     * Add a room made by hand, centred at map point (x, y), and select it. With {@code linkTo}
+     * (a room on this map) it is joined to that room by a line; {@code dirOut} is the direction
+     * from {@code linkTo} to the new room and {@code dirBack} the way back (either may be null).
+     */
+    void addRoom(int object, String name, double x, double y, Integer linkTo, String dirOut, String dirBack) {
+        if (rooms.containsKey(object)) return;
+        Room room = new Room(object, name, x, y);
+        rooms.put(object, room);
+        if (linkTo != null && rooms.containsKey(linkTo) && linkTo != object) {
+            Link link = links.computeIfAbsent(linkKey(linkTo, object),
+                    k -> new Link(Math.min(linkTo, object), Math.max(linkTo, object)));
+            boolean fromA = link.a == linkTo;
+            if (dirOut != null) {
+                if (fromA) link.dirA = dirOut; else link.dirB = dirOut;
+            }
+            if (dirBack != null) {
+                if (fromA) link.dirB = dirBack; else link.dirA = dirBack;
+            }
+        }
+        selectOnly(room);
+        relayout();
+    }
+
+    /** Right-click on empty space while Auto Map is off: Add Room… / Add Room Linked to …. */
+    private void showAddMenu(ContextMenuEvent e) {
+        if (!manualEditing.getAsBoolean()) return;
+        // a right-drag pans the map; don't pop up a menu when it ends
+        if (rightDragged(e)) return;
+        e.consume();
+        double x = mapX(e.getX()), y = mapY(e.getY());
+        Room sel = selectedRooms.size() == 1 ? selectedRooms.iterator().next() : null;
+
+        MenuItem add = new MenuItem("Add Room…");
+        add.setOnAction(a -> onAddRequest.accept(new AddRequest(x, y, null, null)));
+        MenuItem linked = new MenuItem(sel == null
+                ? "Add Room Linked to Selected Room…"
+                : "Add Room Linked to “" + shorten(sel.name) + "”…");
+        linked.setDisable(sel == null);              // select exactly one room first
+        if (sel != null) {
+            linked.setOnAction(a -> onAddRequest.accept(new AddRequest(x, y, sel.object, sel.name)));
+        }
+        showMenu(e, add, linked);
+    }
+
+    private static String shorten(String s) {
+        return s.length() <= 28 ? s : s.substring(0, 27) + "…";
+    }
+
+    private BiConsumer<Integer, String> onLoopRequest = (obj, name) -> { };
+    private Consumer<List<Integer>> onDeleteRequest = objects -> { };
+
+    /** Called with a room when the user picks Add Loop… on its menu (Auto Map off). */
+    void setOnLoopRequest(BiConsumer<Integer, String> handler) { onLoopRequest = handler; }
+
+    /** Called with the selected rooms when the user picks Delete Room on a room's menu (Auto Map off). */
+    void setOnDeleteRequest(Consumer<List<Integer>> handler) { onDeleteRequest = handler; }
+
+    /** Add a loop (a connection from a room back to itself) labelled {@code dir} (may be null), and select it. */
+    void addLoop(int object, String dir) {
+        if (!rooms.containsKey(object)) return;
+        Link loop = links.computeIfAbsent(linkKey(object, object), k -> new Link(object, object));
+        loop.dirA = dir;
+        selectedRooms.clear();
+        selected = loop;
+        relayout();
+    }
+
+    /** Remove rooms from this map with every connection that touches them. */
+    void deleteRooms(List<Integer> objects) {
+        Set<Integer> gone = new LinkedHashSet<>(objects);
+        rooms.keySet().removeAll(gone);
+        links.values().removeIf(l -> gone.contains(l.a) || gone.contains(l.b));
+        selectedRooms.removeIf(r -> gone.contains(r.object));
+        if (gone.contains(current)) current = -1;
+        selected = null;
+        relayout();
+    }
+
+    /** Remove one connection (a line or a loop) and its labels. */
+    private void deleteLink(Link l) {
+        links.remove(linkKey(l.a, l.b));
+        if (selected == l || selected instanceof LabelRef ref && ref.link() == l) selected = null;
+        relayout();
+    }
+
+    /** True if the right button moved since it went down (a pan, not a click); forgets the press. */
+    private boolean rightDragged(ContextMenuEvent e) {
+        boolean panned = !Double.isNaN(rightX) && Math.hypot(e.getX() - rightX, e.getY() - rightY) > 4;
+        rightX = rightY = Double.NaN;
+        return panned;
+    }
+
+    /** Close the right-click menu, if one is open. */
+    void hideMenu() {
+        if (roomMenu != null && roomMenu.isShowing()) roomMenu.hide();
+    }
+
+    private void showMenu(ContextMenuEvent e, MenuItem... items) {
+        if (roomMenu != null) roomMenu.hide();
+        roomMenu = new ContextMenu(items);
+        roomMenu.setAutoHide(true);
+        roomMenu.setConsumeAutoHidingEvents(false);   // the click that closes it still does its job
+        roomMenu.show(canvas, e.getScreenX(), e.getScreenY());
+    }
+
+    /** Right-click on a line, loop or label while Auto Map is off: Delete Connection. */
+    private void showLinkMenu(ContextMenuEvent e, Object h) {
+        if (!manualEditing.getAsBoolean() || rightDragged(e)) return;
+        Link l = h instanceof LabelRef ref ? ref.link() : (Link) h;
+        e.consume();
+        selectedRooms.clear();
+        selected = l;
+        redraw();
+        MenuItem edit = new MenuItem(isLoop(l) ? "Edit Loop…" : "Edit Connection…");
+        edit.setOnAction(a -> {
+            Room ra = rooms.get(l.a), rb = rooms.get(l.b);
+            if (ra != null && rb != null) {
+                onLinkEditRequest.accept(new LinkEdit(l.a, ra.name, l.b, rb.name, l.dirA, isLoop(l) ? null : l.dirB));
+            }
+        });
+        MenuItem delete = new MenuItem(isLoop(l) ? "Delete Loop" : "Delete Connection");
+        delete.setOnAction(a -> deleteLink(l));
+        showMenu(e, edit, delete);
+    }
+
+    /**
+     * A connection to edit: rooms {@code a} and {@code b} (the same room for a loop) and its
+     * labels, {@code dirA} leading from a to b and {@code dirB} from b to a (null for none; a loop
+     * only has dirA).
+     */
+    record LinkEdit(int a, String aName, int b, String bName, String dirA, String dirB) {
+        boolean loop() { return a == b; }
+    }
+
+    private Consumer<LinkEdit> onLinkEditRequest = r -> { };
+
+    /** Called when the user picks Edit Connection… / Edit Loop… on a connection's menu. */
+    void setOnLinkEditRequest(Consumer<LinkEdit> handler) { onLinkEditRequest = handler; }
+
+    /**
+     * Change a connection's labels: {@code dirA} leads from room a to b, {@code dirB} from b to a
+     * (null removes a label). A label that is removed and later given again starts at its default spot.
+     */
+    void setLinkLabels(int a, int b, String dirA, String dirB) {
+        Link l = links.get(linkKey(a, b));
+        if (l == null) return;
+        if (l.a != a) {                               // the caller's a is this link's b
+            String t = dirA;
+            dirA = dirB;
+            dirB = t;
+        }
+        if (dirA == null) l.offAx = l.offAy = 0;
+        if (dirB == null) l.offBx = l.offBy = 0;
+        l.dirA = dirA;
+        l.dirB = isLoop(l) ? null : dirB;
+        if (selected instanceof LabelRef ref && ref.link() == l && labelText(ref) == null) selected = l;
+        relayout();
+    }
+
     private void showRoomMenu(ContextMenuEvent e) {
         Object h = hit(mapX(e.getX()), mapY(e.getY()));
-        if (!(h instanceof Room r)) return;
+        if (h == null) {
+            showAddMenu(e);
+            return;
+        }
+        if (!(h instanceof Room r)) {
+            showLinkMenu(e, h);
+            return;
+        }
+        rightDragged(e);                          // forget the press
         e.consume();
         if (!selectedRooms.contains(r)) selectOnly(r);   // right-click outside the selection: just this room
         redraw();
@@ -459,9 +657,54 @@ final class MapView extends ScrollPane {
         MenuItem move = new MenuItem(objects.size() == 1 ? "Move" : "Move " + objects.size() + " Rooms");
         move.setDisable(!moveAvailable.getAsBoolean());
         move.setOnAction(a -> onMoveRequest.accept(objects));
-        if (roomMenu != null) roomMenu.hide();
-        roomMenu = new ContextMenu(note, move);
-        roomMenu.show(canvas, e.getScreenX(), e.getScreenY());
+        if (!manualEditing.getAsBoolean()) {
+            showMenu(e, note, move);
+            return;
+        }
+        // Auto Map off: editing by hand
+        MenuItem loop = new MenuItem("Add Loop…");          // for the room that was right-clicked
+        loop.setDisable(links.containsKey(linkKey(r.object, r.object)));   // one loop per room
+        loop.setOnAction(a -> onLoopRequest.accept(r.object, r.name));
+        MenuItem delete = new MenuItem(objects.size() == 1 ? "Delete Room" : "Delete " + objects.size() + " Rooms");
+        delete.setOnAction(a -> onDeleteRequest.accept(objects));
+        if (selectedRooms.size() != 2) {
+            showMenu(e, note, move, new SeparatorMenuItem(), loop, delete);
+            return;
+        }
+        // exactly two rooms selected: join them (or edit the line that already joins them)
+        List<Room> pair = new ArrayList<>(selectedRooms);       // in the order they were selected
+        Room ra = pair.get(0), rb = pair.get(1);
+        Link existing = links.get(linkKey(ra.object, rb.object));
+        MenuItem connect = new MenuItem(existing == null ? "Connect Rooms…" : "Edit Connection…");
+        connect.setOnAction(a -> {
+            String dirA = null, dirB = null;                     // ra -> rb and rb -> ra
+            if (existing != null) {
+                dirA = existing.a == ra.object ? existing.dirA : existing.dirB;
+                dirB = existing.a == ra.object ? existing.dirB : existing.dirA;
+            }
+            LinkEdit edit = new LinkEdit(ra.object, ra.name, rb.object, rb.name, dirA, dirB);
+            if (existing == null) onConnectRequest.accept(edit);
+            else onLinkEditRequest.accept(edit);
+        });
+        showMenu(e, note, move, new SeparatorMenuItem(), connect, loop, delete);
+    }
+
+    private Consumer<LinkEdit> onConnectRequest = r -> { };
+
+    /** Called with the two selected rooms when the user picks Connect Rooms… (Auto Map off). */
+    void setOnConnectRequest(Consumer<LinkEdit> handler) { onConnectRequest = handler; }
+
+    /**
+     * Join rooms {@code a} and {@code b} with a straight line, labelled {@code dirA} (from a to b)
+     * and {@code dirB} (from b to a), either may be null; the line ends up selected. An existing
+     * line between them just gets the new labels.
+     */
+    void connect(int a, int b, String dirA, String dirB) {
+        if (a == b || !rooms.containsKey(a) || !rooms.containsKey(b)) return;
+        Link l = links.computeIfAbsent(linkKey(a, b), k -> new Link(Math.min(a, b), Math.max(a, b)));
+        selectedRooms.clear();
+        selected = l;
+        setLinkLabels(a, b, dirA, dirB);                         // also relays out and redraws
     }
 
     private static double halfW(Room r) { return r.portal != 0 ? CIRCLE_D / 2 : BOX_W / 2; }
@@ -611,8 +854,43 @@ final class MapView extends ScrollPane {
 
     // ------------------------------------------------------------------ geometry
 
-    /** The bend point of a link, in map coordinates. */
+    /**
+     * A loop is a link from a room back to itself (a == b): a small circle just outside the room
+     * with an arrow on it and one label (dirA). Its bend (bendX, bendY) only gives the direction
+     * from the room's centre to the loop; (0, 0) means the default, up and to the right.
+     */
+    private static boolean isLoop(Link l) { return l.a == l.b; }
+
+    private static final double LOOP_R = 11;              // radius of a loop's circle
+
+    /** Unit vector from a loop's room towards the loop. */
+    private static double[] loopDir(Link l) {
+        double len = Math.hypot(l.bendX, l.bendY);
+        if (len < 1e-6) return new double[] {Math.sqrt(0.5), -Math.sqrt(0.5)};
+        return new double[] {l.bendX / len, l.bendY / len};
+    }
+
+    /** Distance from a room's centre to its edge in the direction of unit vector (ux, uy). */
+    private static double edge(Room r, double ux, double uy) {
+        return r.portal != 0 ? CIRCLE_D / 2
+                : Math.min(Math.abs(ux) < 1e-9 ? Double.MAX_VALUE : BOX_W / 2 / Math.abs(ux),
+                        Math.abs(uy) < 1e-9 ? Double.MAX_VALUE : BOX_H / 2 / Math.abs(uy));
+    }
+
+    /** Centre of a loop's circle in map coordinates: overlapping the room's edge a little. */
+    private double[] loopCentre(Link l) {
+        Room r = rooms.get(l.a);
+        double[] u = loopDir(l);
+        double d = edge(r, u[0], u[1]) + LOOP_R * 0.6;
+        return new double[] {r.x + u[0] * d, r.y + u[1] * d};
+    }
+
+    /** The bend point of a link, in map coordinates (for a loop: the far side of its circle). */
     private double[] bend(Link l) {
+        if (isLoop(l)) {
+            double[] c = loopCentre(l), u = loopDir(l);
+            return new double[] {c[0] + u[0] * LOOP_R, c[1] + u[1] * LOOP_R};
+        }
         Room a = rooms.get(l.a), b = rooms.get(l.b);
         return new double[] {(a.x + b.x) / 2 + l.bendX, (a.y + b.y) / 2 + l.bendY};
     }
@@ -620,6 +898,10 @@ final class MapView extends ScrollPane {
     /** Centre of a label in map coordinates: just outside its room, along the line, plus its offset. */
     private double[] labelPos(LabelRef ref) {
         Link l = ref.link();
+        if (isLoop(l)) {                              // beyond the loop, plus its offset
+            double[] m = bend(l), u = loopDir(l);
+            return new double[] {m[0] + u[0] * LABEL_GAP + l.offAx, m[1] + u[1] * LABEL_GAP + l.offAy};
+        }
         Room r = rooms.get(ref.atA() ? l.a : l.b);
         double[] m = bend(l);
         double vx = m[0] - r.x, vy = m[1] - r.y;
@@ -630,9 +912,7 @@ final class MapView extends ScrollPane {
             py = r.y - halfH(r) - LABEL_GAP;
         } else {
             double ux = vx / len, uy = vy / len;
-            double edge = r.portal != 0 ? CIRCLE_D / 2
-                    : Math.min(Math.abs(ux) < 1e-9 ? Double.MAX_VALUE : BOX_W / 2 / Math.abs(ux),
-                            Math.abs(uy) < 1e-9 ? Double.MAX_VALUE : BOX_H / 2 / Math.abs(uy));
+            double edge = edge(r, ux, uy);
             double dist = Math.min(edge + LABEL_GAP, len * 0.9);
             px = r.x + ux * dist;
             py = r.y + uy * dist;
@@ -647,7 +927,7 @@ final class MapView extends ScrollPane {
         for (Link l : links.values()) {
             if (!rooms.containsKey(l.a) || !rooms.containsKey(l.b)) continue;
             if (l.dirA != null) out.add(new LabelRef(l, true));
-            if (l.dirB != null) out.add(new LabelRef(l, false));
+            if (l.dirB != null && !isLoop(l)) out.add(new LabelRef(l, false));   // a loop has one label
         }
         return out;
     }
@@ -685,6 +965,11 @@ final class MapView extends ScrollPane {
         for (Link l : links.values()) {
             Room a = rooms.get(l.a), b = rooms.get(l.b);
             if (a == null || b == null) continue;
+            if (isLoop(l)) {
+                double[] c = loopCentre(l);
+                if (Math.abs(Math.hypot(x - c[0], y - c[1]) - LOOP_R) <= 6) return l;
+                continue;
+            }
             double[] m = bend(l);
             if (segmentDistance(x, y, a.x, a.y, m[0], m[1]) <= 6
                     || segmentDistance(x, y, m[0], m[1], b.x, b.y) <= 6) return l;
@@ -703,6 +988,10 @@ final class MapView extends ScrollPane {
      * selection box (with Shift/Ctrl/Cmd it adds to the selection). Other buttons pan the map.
      */
     private void onPressed(MouseEvent e) {
+        if (e.getButton() == MouseButton.SECONDARY) {
+            rightX = e.getX();
+            rightY = e.getY();
+        }
         if (e.getButton() != MouseButton.PRIMARY) return;
         e.consume();                          // primary drags select or move; they never pan
         boolean additive = e.isShiftDown() || e.isShortcutDown();
@@ -789,6 +1078,10 @@ final class MapView extends ScrollPane {
                 r.x += dx;
                 r.y += dy;
             }
+        } else if (selected instanceof Link l && isLoop(l)) {
+            Room r = rooms.get(l.a);           // a loop swings round its room towards the pointer
+            l.bendX = mapX(e.getX()) - r.x;
+            l.bendY = mapY(e.getY()) - r.y;
         } else if (selected instanceof Link l) {
             l.bendX += dx;
             l.bendY += dy;
@@ -827,7 +1120,7 @@ final class MapView extends ScrollPane {
         }
     }
 
-    /** Double-click: straighten a line, or put a label back at its default spot. */
+    /** Double-click: straighten a line (or put a loop back up and to the right), or put a label back. */
     private static void resetPosition(Object item) {
         if (item instanceof Link l) {
             l.bendX = 0;
@@ -937,6 +1230,18 @@ final class MapView extends ScrollPane {
             boolean sel = l == selected;
             g.setStroke(sel ? select : line);
             g.setLineWidth(sel ? 3 : 2);
+            if (isLoop(l)) {                  // drawn before the rooms, so the part inside the room is hidden
+                double[] c = loopCentre(l), u = loopDir(l);
+                g.strokeOval(c[0] + ox - LOOP_R, c[1] + oy - LOOP_R, 2 * LOOP_R, 2 * LOOP_R);
+                // arrowhead at the far side of the loop, pointing round it (clockwise)
+                double tx = -u[1], ty = u[0], s = 5;
+                double ax = m[0] + ox, ay = m[1] + oy;
+                g.setFill(sel ? select : line);
+                g.fillPolygon(
+                        new double[] {ax + tx * s, ax - tx * s + u[0] * s, ax - tx * s - u[0] * s},
+                        new double[] {ay + ty * s, ay - ty * s + u[1] * s, ay - ty * s - u[1] * s}, 3);
+                continue;
+            }
             g.strokePolyline(new double[] {a.x + ox, m[0] + ox, b.x + ox},
                     new double[] {a.y + oy, m[1] + oy, b.y + oy}, 3);
             if (sel) {

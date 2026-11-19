@@ -1,12 +1,20 @@
 package storyscape.fx;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import javafx.animation.Animation;
+import javafx.animation.KeyFrame;
+import javafx.animation.PauseTransition;
+import javafx.animation.Timeline;
 import javafx.application.Platform;
 import javafx.beans.binding.Bindings;
 import javafx.beans.property.BooleanProperty;
@@ -39,6 +47,7 @@ import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.util.Callback;
+import javafx.util.Duration;
 
 /**
  * The panel beside the story: Cover Art, Game Manual, Hints, Notes (free text) and a Map tab. The
@@ -47,8 +56,9 @@ import javafx.util.Callback;
  * visits go onto the active map only: the map tab selected most recently. Double-clicking a room
  * opens a new map tab that starts from just that room; the room becomes a circle on both maps, and
  * clicking either circle shows the other map. Map tab titles can be edited by
- * double-clicking them (or with Rename… on their context menu). Notes and all maps are written into
- * saved games as extra Quetzal chunks and restored with them. FX thread only.
+ * double-clicking them (or with Rename… on their context menu). Notes and all maps are kept in a
+ * file beside the story ({@link NotesFile}), apart from saved games: they load when the story opens
+ * and are written on every save, each turn, every half minute and on close. FX thread only.
  */
 final class SidePanel extends TabPane {
     static final String NOTES_CHUNK = "JZnt";
@@ -83,12 +93,25 @@ final class SidePanel extends TabPane {
     private boolean dark;
     private int playerLocation = -1;
     private int nextMapId = 1;
+    /** Where this story's notes and maps are kept (story.storyscape), or null with no story open. */
+    private Path notesFile;
+    /** The bytes last read from or written to {@link #notesFile}: unchanged notes aren't rewritten. */
+    private byte[] lastWritten;
+    /** True once notes and maps came from {@link #notesFile}, so old saves' copies are ignored. */
+    private boolean notesLoaded;
+    private static final int AUTOSAVE_SECONDS = 30;
+    /** Saves a moment after each turn, so a run of quick moves is written once. */
+    private final PauseTransition saveSoon = new PauseTransition(Duration.seconds(2));
 
     SidePanel() {
         getStyleClass().add("zm-side");
         notes.getStyleClass().add("zm-notes");
         notes.setWrapText(true);
-        notes.setPromptText("Your notes — saved along with the game.");
+        notes.setPromptText("Your notes — saved automatically beside the story file.");
+        saveSoon.setOnFinished(e -> saveNotesAndMap());
+        Timeline autosave = new Timeline(new KeyFrame(Duration.seconds(AUTOSAVE_SECONDS), e -> saveNotesAndMap()));
+        autosave.setCycleCount(Animation.INDEFINITE);
+        autosave.play();
         notesTab.setClosable(false);
         coverTab.setClosable(false);
         manualTab.setClosable(false);
@@ -113,6 +136,12 @@ final class SidePanel extends TabPane {
         mapArea.setTop(mapBar());
         mapArea.setMinSize(0, 0);
         mapZoom.addListener((o, a, z) -> applyZoom(z.doubleValue()));
+        // a left click anywhere in the window closes an open map menu
+        sceneProperty().addListener((o, oldScene, scene) -> {
+            if (scene != null) scene.addEventFilter(javafx.scene.input.MouseEvent.MOUSE_PRESSED, e -> {
+                if (e.getButton() == MouseButton.PRIMARY) for (MapView m : maps.values()) m.hideMenu();
+            });
+        });
         addMap(DEFAULT_TITLE);
     }
 
@@ -126,18 +155,78 @@ final class SidePanel extends TabPane {
         for (MapView m : maps.values()) m.applyAppearance();
     }
 
-    /** A story was opened: show the cover art and manual found beside it (story.jpg, story.pdf). */
+    /**
+     * A story was opened: show the cover art and manual found beside it (story.jpg, story.pdf) and
+     * load its notes and maps from story.storyscape, if there is one. Call {@link #clearAll} first.
+     */
     void setStory(Path story) {
         cover.show(story);
         manual.show(story);
         hints.show(story);
+        loadNotesAndMap(NotesFile.forStory(story));
     }
 
-    /** A different story was opened: start with empty notes and a single empty map. */
+    /**
+     * A different story is being opened: start with empty notes and a single empty map. Save the
+     * current story's notes and maps ({@link #saveNotesAndMap}) before calling this.
+     */
     void clearAll() {
+        notesFile = null;                              // nothing is written until setStory names the new file
+        lastWritten = null;
+        notesLoaded = false;
         notes.clear();
         roomNotes.clear();
         resetMaps();
+    }
+
+    /** The same story was restarted: the notes and maps stay, but the player is nowhere yet. */
+    void restarted() {
+        playerLocation = -1;
+    }
+
+    // ------------------------------------------------------------------ notes-and-map file
+
+    private void loadNotesAndMap(Path file) {
+        notesFile = file;
+        try {
+            Map<String, byte[]> chunks = NotesFile.read(file);
+            if (chunks != null) {
+                restoreFrom(chunks);
+                notesLoaded = true;
+            }
+        } catch (IOException | RuntimeException e) {
+            // unreadable: keep a copy so the next autosave doesn't destroy it, and start afresh
+            try {
+                Files.copy(file, file.resolveSibling(file.getFileName() + ".bad"),
+                        StandardCopyOption.REPLACE_EXISTING);
+            } catch (IOException ignored) {
+                // nothing more can be done
+            }
+        }
+        lastWritten = NotesFile.encode(saveChunks());  // what's on screen now matches the file
+    }
+
+    /**
+     * Writes the notes and maps to the story's .storyscape file if they changed since the last
+     * write. Called after a successful save, every turn, every {@link #AUTOSAVE_SECONDS} seconds
+     * and when the story or the window is closed. Returns false if the file couldn't be written.
+     */
+    boolean saveNotesAndMap() {
+        if (notesFile == null) return true;
+        byte[] data = NotesFile.encode(saveChunks());
+        if (Arrays.equals(data, lastWritten)) return true;
+        try {
+            NotesFile.write(notesFile, data);
+            lastWritten = data;
+            return true;
+        } catch (IOException | RuntimeException e) {
+            return false;
+        }
+    }
+
+    /** The story file's notes-and-map file, or null before a story is opened. */
+    Path notesFile() {
+        return notesFile;
     }
 
     /** Back to a single empty map at 100% (the notes are kept). */
@@ -170,6 +259,7 @@ final class SidePanel extends TabPane {
             if (m == activeMap && autoMap.get()) m.enter(object, name, command, travelled);
             else m.locate(object);
         }
+        saveSoon.playFromStart();                      // autosave the notes and maps shortly
     }
 
     /**
@@ -209,6 +299,12 @@ final class SidePanel extends TabPane {
         map.setMoveAvailable(() -> maps.size() > 1);
         map.setHasNote(roomNotes::containsKey);
         map.setOnNoteRequest(this::editRoomNote);
+        map.setManualEditing(() -> !autoMap.get());   // Add Room… only while Auto Map is off
+        map.setOnAddRequest(req -> addRoomByHand(map, req));
+        map.setOnLoopRequest((obj, name) -> addLoop(map, obj, name));
+        map.setOnDeleteRequest(objects -> deleteRooms(map, objects));
+        map.setOnLinkEditRequest(edit -> editConnection(map, edit));
+        map.setOnConnectRequest(edit -> editConnection(map, edit, true));
         tab.setOnCloseRequest(e -> {
             if (maps.size() <= 1 || !confirmClose(tab)) e.consume();
         });
@@ -381,6 +477,219 @@ final class SidePanel extends TabPane {
             source.locate(playerLocation);
             target.locate(playerLocation);
         });
+    }
+
+    /** Directions offered when linking a hand-made room, with their opposites. */
+    private static final String[][] DIRECTIONS = {
+        {"n", "s"}, {"ne", "sw"}, {"e", "w"}, {"se", "nw"}, {"s", "n"}, {"sw", "ne"}, {"w", "e"},
+        {"nw", "se"}, {"up", "down"}, {"down", "up"}, {"in", "out"}, {"out", "in"},
+    };
+    private static final String NO_DIRECTION = "(none)";
+
+    /**
+     * Add Room… / Add Room Linked to … (empty-space menu while Auto Map is off): ask for the
+     * room's name and, when linking, the directions each way, then add it where the user clicked.
+     * Hand-made rooms get negative object numbers, so they never clash with the game's rooms.
+     */
+    private void addRoomByHand(MapView map, MapView.AddRequest req) {
+        TextField name = new TextField();
+        name.setPromptText("Room name");
+        name.setPrefColumnCount(24);
+
+        javafx.scene.layout.GridPane grid = new javafx.scene.layout.GridPane();
+        grid.setHgap(10);
+        grid.setVgap(8);
+        grid.setPadding(new Insets(10, 0, 0, 0));
+        grid.addRow(0, new Label("Name:"), name);
+
+        ComboBox<String> out = directionCombo(), back = directionCombo();
+        if (req.linkTo() != null) {
+            grid.addRow(1, new Label("Direction from “" + req.linkToName() + "”:"), out);
+            grid.addRow(2, new Label("Direction back:"), back);
+            boolean[] backTouched = {false};
+            back.setOnAction(e -> backTouched[0] = true);
+            out.valueProperty().addListener((o, a, dir) -> {
+                if (backTouched[0]) return;
+                String opposite = NO_DIRECTION;
+                for (String[] d : DIRECTIONS) if (d[0].equals(dir)) opposite = d[1];
+                back.setOnAction(null);               // filling it in isn't the user's choice
+                back.setValue(opposite);
+                back.setOnAction(e -> backTouched[0] = true);
+            });
+        }
+
+        Dialog<ButtonType> dialog = Styles.dialog(new Dialog<>());
+        if (getScene() != null) dialog.initOwner(getScene().getWindow());
+        dialog.setTitle("Add Room");
+        dialog.setHeaderText(req.linkTo() == null
+                ? "Add a room to the map:"
+                : "Add a room linked to “" + req.linkToName() + "”:");
+        dialog.getDialogPane().setContent(grid);
+        dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
+        dialog.getDialogPane().lookupButton(ButtonType.OK).disableProperty()
+                .bind(Bindings.createBooleanBinding(() -> name.getText().isBlank(), name.textProperty()));
+        Platform.runLater(name::requestFocus);
+
+        if (dialog.showAndWait().orElse(ButtonType.CANCEL) != ButtonType.OK) return;
+        String title = name.getText().replace('\n', ' ').strip();
+        if (title.isEmpty()) return;
+        map.addRoom(nextHandMadeObject(), title, req.x(), req.y(), req.linkTo(),
+                direction(out), direction(back));
+    }
+
+    /**
+     * Add Loop… on a room's menu (Auto Map off): a connection from the room back to itself, such
+     * as a passage that leads round in a circle. Asks for its one label: a direction from the list
+     * or any word typed in; left blank, the loop has no label.
+     */
+    private void addLoop(MapView map, int object, String name) {
+        ComboBox<String> dir = new ComboBox<>();
+        for (String[] d : DIRECTIONS) dir.getItems().add(d[0]);
+        dir.setEditable(true);
+        dir.setVisibleRowCount(12);
+        dir.setPromptText("e.g. n, up, wait");
+
+        HBox row = new HBox(10, new Label("Direction:"), dir);
+        row.setAlignment(Pos.CENTER_LEFT);
+        row.setPadding(new Insets(10, 0, 0, 0));
+
+        Dialog<ButtonType> dialog = Styles.dialog(new Dialog<>());
+        if (getScene() != null) dialog.initOwner(getScene().getWindow());
+        dialog.setTitle("Add Loop");
+        dialog.setHeaderText("Add a connection from “" + name + "” back to itself:");
+        dialog.getDialogPane().setContent(row);
+        dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
+        Platform.runLater(dir::requestFocus);
+
+        if (dialog.showAndWait().orElse(ButtonType.CANCEL) != ButtonType.OK) return;
+        String text = dir.getEditor().getText();      // what is typed, even if not picked from the list
+        text = text == null ? "" : text.replace('\n', ' ').strip();
+        map.addLoop(object, text.isEmpty() ? null : text);
+    }
+
+    /**
+     * Edit Connection / Edit Loop on a connection's menu (Auto Map off): change the direction
+     * label each way (just the one for a loop). Each is a direction from the list or any word
+     * typed in; left blank, that end has no label.
+     */
+    private void editConnection(MapView map, MapView.LinkEdit edit) {
+        editConnection(map, edit, false);
+    }
+
+    /**
+     * The connection dialog. With {@code create} (Connect Rooms… with two rooms selected) OK
+     * draws a new line between the rooms; picking the first direction fills in its opposite for
+     * the way back until that is chosen by hand.
+     */
+    private void editConnection(MapView map, MapView.LinkEdit edit, boolean create) {
+        ComboBox<String> there = labelCombo(edit.dirA()), back = labelCombo(edit.dirB());
+        if (create) {
+            boolean[] backTouched = {false};
+            back.getEditor().textProperty().addListener((o, a, t) -> {
+                if (back.getEditor().isFocused()) backTouched[0] = true;
+            });
+            back.setOnAction(e -> {
+                if (back.isFocused() || back.isShowing()) backTouched[0] = true;
+            });
+            there.valueProperty().addListener((o, a, dir) -> {
+                if (backTouched[0]) return;
+                String opposite = "";
+                for (String[] d : DIRECTIONS) if (d[0].equals(dir)) opposite = d[1];
+                back.getEditor().setText(opposite);
+            });
+        }
+        javafx.scene.layout.GridPane grid = new javafx.scene.layout.GridPane();
+        grid.setHgap(10);
+        grid.setVgap(8);
+        grid.setPadding(new Insets(10, 0, 0, 0));
+        if (edit.loop()) {
+            grid.addRow(0, new Label("Direction:"), there);
+        } else {
+            grid.addRow(0, new Label("From “" + edit.aName() + "” to “" + edit.bName() + "”:"), there);
+            grid.addRow(1, new Label("From “" + edit.bName() + "” to “" + edit.aName() + "”:"), back);
+        }
+
+        Dialog<ButtonType> dialog = Styles.dialog(new Dialog<>());
+        if (getScene() != null) dialog.initOwner(getScene().getWindow());
+        dialog.setTitle(create ? "Connect Rooms" : edit.loop() ? "Edit Loop" : "Edit Connection");
+        dialog.setHeaderText(create
+                ? "Connect “" + edit.aName() + "” and “" + edit.bName() + "”:"
+                : edit.loop()
+                ? "The loop from “" + edit.aName() + "” back to itself:"
+                : "The connection between “" + edit.aName() + "” and “" + edit.bName() + "”:");
+        dialog.getDialogPane().setContent(grid);
+        dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
+        Platform.runLater(there::requestFocus);
+
+        if (dialog.showAndWait().orElse(ButtonType.CANCEL) != ButtonType.OK) return;
+        if (create) map.connect(edit.a(), edit.b(), label(there), label(back));
+        else map.setLinkLabels(edit.a(), edit.b(), label(there), edit.loop() ? null : label(back));
+    }
+
+    /** An editable list of directions starting at {@code value} (blank for none). */
+    private static ComboBox<String> labelCombo(String value) {
+        ComboBox<String> c = new ComboBox<>();
+        for (String[] d : DIRECTIONS) c.getItems().add(d[0]);
+        c.setEditable(true);
+        c.setVisibleRowCount(12);
+        c.setPromptText("none");
+        c.setValue(value);
+        c.getEditor().setText(value == null ? "" : value);
+        return c;
+    }
+
+    /** What is typed in an editable combo, even if not picked from its list; blank means none. */
+    private static String label(ComboBox<String> c) {
+        String text = c.getEditor().getText();
+        text = text == null ? "" : text.replace('\n', ' ').strip();
+        return text.isEmpty() ? null : text;
+    }
+
+    /**
+     * Delete Room on a room's menu (Auto Map off): after confirming, remove the rooms from this
+     * map with their connections. Circles linked to them revert to rectangles, and room notes are
+     * dropped once no map has the room any more.
+     */
+    private void deleteRooms(MapView map, List<Integer> objects) {
+        if (objects.isEmpty()) return;
+        Alert alert = Styles.dialog(new Alert(Alert.AlertType.CONFIRMATION,
+                "Their connections are deleted too.", ButtonType.OK, ButtonType.CANCEL));
+        if (getScene() != null) alert.initOwner(getScene().getWindow());
+        alert.setTitle("Delete");
+        alert.setHeaderText(objects.size() == 1
+                ? "Delete this room from the map?" : "Delete these " + objects.size() + " rooms from the map?");
+        if (alert.showAndWait().orElse(ButtonType.CANCEL) != ButtonType.OK) return;
+
+        map.deleteRooms(objects);
+        validatePortals();
+        for (int obj : objects) {
+            boolean elsewhere = false;
+            for (MapView m : maps.values()) elsewhere |= m.contains(obj);
+            if (!elsewhere) roomNotes.remove(obj);
+        }
+        for (MapView m : maps.values()) m.refreshNotes();
+    }
+
+    private static ComboBox<String> directionCombo() {
+        ComboBox<String> c = new ComboBox<>();
+        c.getItems().add(NO_DIRECTION);
+        for (String[] d : DIRECTIONS) c.getItems().add(d[0]);
+        c.setValue(NO_DIRECTION);
+        c.setVisibleRowCount(13);
+        return c;
+    }
+
+    private static String direction(ComboBox<String> c) {
+        String v = c.getValue();
+        return v == null || v.equals(NO_DIRECTION) ? null : v;
+    }
+
+    /** A new negative object number, unused on every map and by room notes (-1 means "nowhere"). */
+    private int nextHandMadeObject() {
+        int min = -1;
+        for (MapView m : maps.values()) min = Math.min(min, m.minObject());
+        for (int obj : roomNotes.keySet()) min = Math.min(min, obj);
+        return min - 1;
     }
 
     /**
@@ -572,9 +881,19 @@ final class SidePanel extends TabPane {
         for (MapView m : maps.values()) m.refreshNotes();
     }
 
-    /** Replace notes and maps with those in a restored game; saves without them leave both alone. */
+    /**
+     * A game was restored. Notes and maps now live in the story's .storyscape file and stay as they
+     * are; only a save from an older StoryScape, restored when that file doesn't exist yet, supplies
+     * them (they are then written to the file).
+     */
     void restoreChunks(Map<String, byte[]> chunks) {
-        restoreFrom(chunks);
+        boolean legacy = chunks.containsKey(NOTES_CHUNK) || chunks.containsKey(MAP_CHUNK)
+                || chunks.containsKey(ROOM_NOTES_CHUNK);
+        if (legacy && !notesLoaded) {
+            restoreFrom(chunks);
+            notesLoaded = true;
+            saveNotesAndMap();
+        }
         showCoverArt();                                // a restore always ends on the Cover Art tab
     }
 

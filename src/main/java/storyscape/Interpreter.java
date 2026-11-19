@@ -460,6 +460,7 @@ public final class Interpreter {
         if (file == null) return false;
         try {
             Files.write(Paths.get(file), Quetzal.write(m, frames, pc, io.extraSaveChunks()));
+            io.gameSaved(file);
             return true;
         } catch (IOException | RuntimeException e) {
             io.print("\n[Save failed: " + e.getMessage() + "]\n");

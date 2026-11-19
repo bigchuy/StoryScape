@@ -249,10 +249,10 @@ public final class FxApp extends Application {
         boolean restart = path.equals(current);
         view.resetAll();
         if (restart) {
-            side.resetMaps();                           // restart: keep notes, start a fresh map
+            side.restarted();                           // restart: notes and maps carry on
         } else {
             side.clearAll();
-            side.setStory(path);                        // cover art and manual beside the story file
+            side.setStory(path);                        // cover art, manual, notes and maps beside the story file
         }
         side.showCoverArt();
         if (!restart) {
@@ -338,7 +338,9 @@ public final class FxApp extends Application {
         });
     }
 
+    /** Stops the running story (if any), first writing its notes and maps to their file. */
     private void stopStory() {
+        side.saveNotesAndMap();
         if (io != null) io.close();
         if (interpreter != null) interpreter.stop();
         if (worker != null) worker.interrupt();

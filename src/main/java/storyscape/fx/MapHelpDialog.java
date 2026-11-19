@@ -25,7 +25,24 @@ final class MapHelpDialog {
             "The room you are in is highlighted.",
             "Untick Auto Map to stop adding rooms and lines, for example while wandering a maze. "
                     + "Rooms already on a map are still highlighted when you enter them.",
-            "No line is drawn after Restart, Restore or Undo, since you didn't walk there."},
+            "No line is drawn after Restart, Restore or Undo, since you didn't walk there.",
+            "With Auto Map unticked you can add rooms yourself: right-click an empty spot and "
+                    + "choose Add Room…. To join the new room to an existing one, select that room "
+                    + "first and choose Add Room Linked to “…”; you can give the direction each way.",
+            "To join two rooms already on the map, untick Auto Map, select both (Shift-click or "
+                    + "Ctrl-click the second), right-click one of them and choose Connect Rooms…, "
+                    + "giving the direction each way if you like. If they are already joined, the "
+                    + "menu offers Edit Connection… instead.",
+            "Also with Auto Map unticked, right-click a room and choose Add Loop… for an exit that "
+                    + "leads back into the same room. It is drawn as a small loop with an arrow and "
+                    + "one direction label; drag it to move it round the room, double-click it to "
+                    + "put it back.",
+            "To delete, untick Auto Map, then right-click a room (or a selection) and choose Delete "
+                    + "Room, or right-click a line, loop or label and choose Delete Connection "
+                    + "(Delete Loop). Deleting a room deletes its connections too.",
+            "To change a connection's direction labels, untick Auto Map, right-click the line, "
+                    + "loop or one of its labels and choose Edit Connection… (Edit Loop…). Pick a "
+                    + "direction or type any word; leave it blank for no label."},
         {"Arranging rooms and lines",
             "Drag a room to move it.",
             "Click a room to select it. Shift-click or Ctrl-click (Cmd-click on a Mac) adds a room "
@@ -61,8 +78,12 @@ final class MapHelpDialog {
             "Delete all of a note's text to remove it.",
             "A note belongs to the room, so it shows on every map that has that room."},
         {"Saving and appearance",
-            "Your maps, room notes and the Notes tab are stored inside your saved games and "
-                    + "come back when you restore.",
+            "Your maps, room notes and the Notes tab are kept in their own file beside the story "
+                    + "(for zork1.z3 it is zork1.storyscape), separate from your saved games.",
+            "That file is written whenever you save the game, after each move, every 30 seconds "
+                    + "and when you close the story or StoryScape. It is loaded whenever the story "
+                    + "opens, whether or not you restore a game, and restoring doesn't change it.",
+            "Restart Story keeps your maps and notes.",
             "Change the map's font and colours (text, background, notes and the current room) "
                     + "in File ▸ Preferences."},
     };

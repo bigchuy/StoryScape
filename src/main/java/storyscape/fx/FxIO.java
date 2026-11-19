@@ -251,8 +251,11 @@ final class FxIO implements ZIO {
         post(() -> side.locationChanged(object, name, command, travelled));
     }
 
-    @Override public Map<String, byte[]> extraSaveChunks() {
-        return callFx(side::saveChunks);
+    /** Saved games hold only the story; notes and maps go to the story's own .storyscape file. */
+    @Override public void gameSaved(String file) {
+        check();
+        boolean ok = callFx(side::saveNotesAndMap);
+        if (!ok) print("\n[Notes and map could not be saved to " + side.notesFile().getFileName() + "]\n");
     }
 
     @Override public void restoreExtraChunks(Map<String, byte[]> chunks) {
