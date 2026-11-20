@@ -28,6 +28,7 @@ import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.CheckBox;
+import javafx.scene.control.ColorPicker;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.ContextMenu;
 import javafx.scene.control.Dialog;
@@ -43,6 +44,8 @@ import javafx.scene.control.Tooltip;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.MouseButton;
 import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.GridPane;
+import javafx.scene.paint.Color;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
@@ -305,6 +308,7 @@ final class SidePanel extends TabPane {
         map.setOnDeleteRequest(objects -> deleteRooms(map, objects));
         map.setOnLinkEditRequest(edit -> editConnection(map, edit));
         map.setOnConnectRequest(edit -> editConnection(map, edit, true));
+        map.setOnRoomEditRequest(edit -> editRoom(map, edit));
         tab.setOnCloseRequest(e -> {
             if (maps.size() <= 1 || !confirmClose(tab)) e.consume();
         });
@@ -421,6 +425,7 @@ final class SidePanel extends TabPane {
         Tab tab = addMap(name);
         MapView created = maps.get(tab);
         created.seed(object, name, object == playerLocation, source.id());
+        created.setRoomColours(List.of(object), source.roomText(object), source.roomOutline(object));
         source.setPortal(object, created.id());
         selectMap(tab);
     }
@@ -565,6 +570,45 @@ final class SidePanel extends TabPane {
         String text = dir.getEditor().getText();      // what is typed, even if not picked from the list
         text = text == null ? "" : text.replace('\n', ' ').strip();
         map.addLoop(object, text.isEmpty() ? null : text);
+    }
+
+    /**
+     * Edit Room… on a room's menu: pick the room's text and outline colours, or tick "Usual" to
+     * go back to the map's own colours. With several rooms selected, all of them change.
+     */
+    private void editRoom(MapView map, MapView.RoomEdit edit) {
+        Color[] usual = map.usualRoomColours();
+        ColorPicker text = new ColorPicker(edit.text() != null ? edit.text() : usual[0]);
+        ColorPicker outline = new ColorPicker(edit.outline() != null ? edit.outline() : usual[1]);
+        CheckBox textUsual = new CheckBox("Usual");
+        CheckBox outlineUsual = new CheckBox("Usual");
+        textUsual.setSelected(edit.text() == null);
+        outlineUsual.setSelected(edit.outline() == null);
+        // picking a colour unticks "Usual"; ticking it shows the usual colour again
+        text.setOnAction(e -> textUsual.setSelected(false));
+        outline.setOnAction(e -> outlineUsual.setSelected(false));
+        textUsual.setOnAction(e -> { if (textUsual.isSelected()) text.setValue(usual[0]); });
+        outlineUsual.setOnAction(e -> { if (outlineUsual.isSelected()) outline.setValue(usual[1]); });
+
+        GridPane grid = new GridPane();
+        grid.setHgap(10);
+        grid.setVgap(10);
+        grid.setPadding(new Insets(10, 0, 0, 0));
+        grid.addRow(0, new Label("Text colour:"), text, textUsual);
+        grid.addRow(1, new Label("Outline colour:"), outline, outlineUsual);
+
+        Dialog<ButtonType> dialog = Styles.dialog(new Dialog<>());
+        if (getScene() != null) dialog.initOwner(getScene().getWindow());
+        dialog.setTitle(edit.objects().size() == 1 ? "Edit Room" : "Edit Rooms");
+        dialog.setHeaderText(edit.name() != null ? "Colours for “" + edit.name() + "”:"
+                : "Colours for the " + edit.objects().size() + " selected rooms:");
+        dialog.getDialogPane().setContent(grid);
+        dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
+
+        if (dialog.showAndWait().orElse(ButtonType.CANCEL) != ButtonType.OK) return;
+        map.setRoomColours(edit.objects(),
+                textUsual.isSelected() ? null : text.getValue(),
+                outlineUsual.isSelected() ? null : outline.getValue());
     }
 
     /**

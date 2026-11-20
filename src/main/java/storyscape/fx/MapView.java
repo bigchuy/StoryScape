@@ -68,6 +68,8 @@ final class MapView extends ScrollPane {
         String name;
         double x, y;
         int portal;
+        /** Colours picked with Edit Room… (null: the map's usual colour). */
+        Color text, outline;
         Room(int object, String name, double x, double y) {
             this.object = object;
             this.name = name;
@@ -358,7 +360,10 @@ final class MapView extends ScrollPane {
             t.links.add(l);
             Room other = a == b ? null : rooms.get(a ? l.b : l.a);   // the end that stays here
             if (other != null && copied.add(other.object)) {
-                t.neighbours.add(new Room(other.object, other.name, other.x, other.y));
+                Room copy = new Room(other.object, other.name, other.x, other.y);
+                copy.text = other.text;
+                copy.outline = other.outline;
+                t.neighbours.add(copy);
             }
             return true;
         });
@@ -657,8 +662,11 @@ final class MapView extends ScrollPane {
         MenuItem move = new MenuItem(objects.size() == 1 ? "Move" : "Move " + objects.size() + " Rooms");
         move.setDisable(!moveAvailable.getAsBoolean());
         move.setOnAction(a -> onMoveRequest.accept(objects));
+        MenuItem edit = new MenuItem(objects.size() == 1 ? "Edit Room…" : "Edit " + objects.size() + " Rooms…");
+        edit.setOnAction(a -> onRoomEditRequest.accept(
+                new RoomEdit(objects, objects.size() == 1 ? r.name : null, r.text, r.outline)));
         if (!manualEditing.getAsBoolean()) {
-            showMenu(e, note, move);
+            showMenu(e, note, edit, move);
             return;
         }
         // Auto Map off: editing by hand
@@ -668,7 +676,7 @@ final class MapView extends ScrollPane {
         MenuItem delete = new MenuItem(objects.size() == 1 ? "Delete Room" : "Delete " + objects.size() + " Rooms");
         delete.setOnAction(a -> onDeleteRequest.accept(objects));
         if (selectedRooms.size() != 2) {
-            showMenu(e, note, move, new SeparatorMenuItem(), loop, delete);
+            showMenu(e, note, edit, move, new SeparatorMenuItem(), loop, delete);
             return;
         }
         // exactly two rooms selected: join them (or edit the line that already joins them)
@@ -682,11 +690,54 @@ final class MapView extends ScrollPane {
                 dirA = existing.a == ra.object ? existing.dirA : existing.dirB;
                 dirB = existing.a == ra.object ? existing.dirB : existing.dirA;
             }
-            LinkEdit edit = new LinkEdit(ra.object, ra.name, rb.object, rb.name, dirA, dirB);
-            if (existing == null) onConnectRequest.accept(edit);
-            else onLinkEditRequest.accept(edit);
+            LinkEdit linkEdit = new LinkEdit(ra.object, ra.name, rb.object, rb.name, dirA, dirB);
+            if (existing == null) onConnectRequest.accept(linkEdit);
+            else onLinkEditRequest.accept(linkEdit);
         });
-        showMenu(e, note, move, new SeparatorMenuItem(), connect, loop, delete);
+        showMenu(e, note, edit, move, new SeparatorMenuItem(), connect, loop, delete);
+    }
+
+    /**
+     * Edit Room… was picked for {@code objects} (the right-clicked room, or the selection it is
+     * in). {@code name} is the room's name when there is just one; {@code text} and
+     * {@code outline} are the right-clicked room's own colours (null for the usual ones).
+     */
+    record RoomEdit(List<Integer> objects, String name, Color text, Color outline) {}
+
+    private Consumer<RoomEdit> onRoomEditRequest = r -> { };
+
+    void setOnRoomEditRequest(Consumer<RoomEdit> handler) { onRoomEditRequest = handler; }
+
+    /** Give these rooms their own text and outline colours (null puts back the usual colour). */
+    void setRoomColours(List<Integer> objects, Color text, Color outline) {
+        for (int obj : objects) {
+            Room r = rooms.get(obj);
+            if (r == null) continue;
+            r.text = text;
+            r.outline = outline;
+        }
+        redraw();
+    }
+
+    /** The room's own text colour, or null for the usual one (or if the room isn't here). */
+    Color roomText(int object) {
+        Room r = rooms.get(object);
+        return r == null ? null : r.text;
+    }
+
+    /** The room's own outline colour, or null for the usual one (or if the room isn't here). */
+    Color roomOutline(int object) {
+        Room r = rooms.get(object);
+        return r == null ? null : r.outline;
+    }
+
+    /** The colours a room has when none are picked for it: {text, outline}. */
+    Color[] usualRoomColours() {
+        return new Color[] {Appearance.mapText(dark), lineColour()};
+    }
+
+    private Color lineColour() {
+        return Color.web(dark ? "#6b6f78" : "#a39d90");
     }
 
     private Consumer<LinkEdit> onConnectRequest = r -> { };
@@ -1196,7 +1247,7 @@ final class MapView extends ScrollPane {
     private void redraw() {
         Color bg = Appearance.mapBackground(dark);
         Color fg = Appearance.mapText(dark);
-        Color line = Color.web(dark ? "#6b6f78" : "#a39d90");
+        Color line = lineColour();
         Color box = Color.web(dark ? "#272a30" : "#ece6d8");
         Color accent = Appearance.mapActiveRoom(dark);
         Color select = Color.web(dark ? "#6fa8ff" : "#2f6fd6");
@@ -1253,10 +1304,11 @@ final class MapView extends ScrollPane {
         for (Room r : rooms.values()) {
             boolean here = r.object == current;
             Font font = here ? Appearance.mapBoldFont() : Appearance.mapFont();
-            Color nameColour = here ? Appearance.contrastOn(accent) : fg;   // readable on the active room's fill
+            // the room you're in keeps readable text on its highlight; a picked outline still shows
+            Color nameColour = here ? Appearance.contrastOn(accent) : r.text != null ? r.text : fg;
             g.setFill(here ? accent : box);
-            g.setStroke(here ? accent : line);
-            g.setLineWidth(here ? 2 : 1.2);
+            g.setStroke(r.outline != null ? r.outline : here ? accent : line);
+            g.setLineWidth(here || r.outline != null ? 2 : 1.2);
             if (r.portal != 0) {
                 double x = r.x + ox - CIRCLE_D / 2, y = r.y + oy - CIRCLE_D / 2;
                 g.fillOval(x, y, CIRCLE_D, CIRCLE_D);
@@ -1383,7 +1435,8 @@ final class MapView extends ScrollPane {
     /**
      * Plain-text form, one item per line: "V 2", "R obj x y name",
      * "L a b bendX bendY offAx offAy offBx offBy dirA dirB" ("-" for no direction), "C obj",
-     * "Z zoom", "I mapId" and "P obj linkedMapId" (after all rooms).
+     * "Z zoom", "I mapId", "P obj linkedMapId" and "K obj textColour outlineColour" (after all
+     * rooms; colours as #rrggbb, "-" for the usual colour).
      */
     byte[] serialize() {
         StringBuilder sb = new StringBuilder("V 2\n");
@@ -1404,6 +1457,11 @@ final class MapView extends ScrollPane {
         sb.append("I ").append(id).append('\n');
         for (Room r : rooms.values()) {
             if (r.portal != 0) sb.append("P ").append(r.object).append(' ').append(r.portal).append('\n');
+            if (r.text != null || r.outline != null) {
+                sb.append("K ").append(r.object)
+                        .append(' ').append(r.text == null ? "-" : Appearance.web(r.text))
+                        .append(' ').append(r.outline == null ? "-" : Appearance.web(r.outline)).append('\n');
+            }
         }
         return sb.toString().getBytes(StandardCharsets.UTF_8);
     }
@@ -1453,6 +1511,13 @@ final class MapView extends ScrollPane {
                     case "P" -> {
                         Room r = rooms.get(Integer.parseInt(p[1]));
                         if (r != null) r.portal = Integer.parseInt(p[2]);
+                    }
+                    case "K" -> {
+                        Room r = rooms.get(Integer.parseInt(p[1]));
+                        if (r != null) {
+                            r.text = p[2].equals("-") ? null : Color.web(p[2]);
+                            r.outline = p[3].equals("-") ? null : Color.web(p[3]);
+                        }
                     }
                     default -> { }
                 }

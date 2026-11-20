@@ -50,7 +50,12 @@ final class MapHelpDialog {
             "Drag on empty space to draw a selection box around several rooms, then drag any "
                     + "selected room to move them all together.",
             "Drag a line to bend it. Double-click a line to straighten it again.",
-            "Drag a direction label to move it. Double-click it to put it back."},
+            "Drag a direction label to move it. Double-click it to put it back.",
+            "Right-click a room and choose Edit Room… to give it its own text and outline "
+                    + "colours, for example to mark dangerous or unfinished rooms. With several "
+                    + "rooms selected, all of them change. Tick Usual to go back to the map's "
+                    + "colours. The room you are in keeps its highlight so its name stays readable, "
+                    + "but its own outline still shows."},
         {"Moving around and zooming",
             "Drag with the right or middle mouse button to pan the map, or use the scroll bars.",
             "Zoom with the − and + buttons, Ctrl + scroll wheel (Cmd + scroll on a Mac) or a "
