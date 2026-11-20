@@ -50,6 +50,7 @@ public final class Interpreter {
 
     private int lastLocation = -1;
     private boolean jumped = true;        // next location change came from restart/restore/undo
+    private boolean roomShown;            // the location's name was printed in the story window this turn
 
     private record Undo(byte[] dynamic, List<Frame> frames, int pc) {}
     private Undo undo;
@@ -374,9 +375,19 @@ public final class Interpreter {
      */
     private void reportLocation() {
         boolean travelled = !jumped;
+        boolean shown = roomShown;
         jumped = false;
+        roomShown = false;
         int loc = m.u16(globalsBase);
-        if (loc == lastLocation) return;
+        if (loc == lastLocation) {
+            // still here, but the room's heading was printed again: the turn may have led back
+            // into the same room (the front end decides, from the command, whether it was a move)
+            if (travelled && shown) {
+                String name = objectName(loc);
+                if (name != null) io.roomRepeated(loc, name);
+            }
+            return;
+        }
         lastLocation = loc;
         String name = objectName(loc);
         if (name != null) io.locationChanged(loc, name, travelled);
@@ -839,7 +850,14 @@ public final class Interpreter {
             case 7: printZString(ops[0]); break;
             case 8: if (version < 4) unsupported(OP1, n); doCall(fetch8()); break;
             case 9: objs.remove(ops[0]); break;
-            case 10: printZString(objs.shortNameAddr(ops[0])); break;
+            case 10:
+                // the location's name printed in the story window (not the status line or a
+                // memory stream) is the room heading a game shows on arrival or LOOK
+                if (ops[0] == m.u16(globalsBase) && io.currentWindow() == 0 && memStreams.isEmpty()) {
+                    roomShown = true;
+                }
+                printZString(objs.shortNameAddr(ops[0]));
+                break;
             case 11: doReturn(ops[0]); break;
             case 12: pc = pc + s(ops[0]) - 2; break;
             case 13: printZString(unpackString(ops[0])); break;

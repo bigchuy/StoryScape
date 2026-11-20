@@ -251,6 +251,12 @@ final class FxIO implements ZIO {
         post(() -> side.locationChanged(object, name, command, travelled));
     }
 
+    @Override public void roomRepeated(int object, String name) {
+        check();
+        String command = lastCommand;
+        post(() -> side.roomRepeated(object, name, command));
+    }
+
     /** Saved games hold only the story; notes and maps go to the story's own .storyscape file. */
     @Override public void gameSaved(String file) {
         check();

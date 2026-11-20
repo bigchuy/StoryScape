@@ -266,6 +266,31 @@ final class SidePanel extends TabPane {
     }
 
     /**
+     * The player is still in {@code object} and the game showed the room again. If Auto Map is on
+     * and {@code command} was a movement (n, go up, …), that exit leads back into the same room:
+     * the room gets a loop on the selected map, or on the first map that has the room if the
+     * selected one doesn't. A blocked exit ("You can't go that way") doesn't show the room again,
+     * and LOOK isn't a movement, so neither adds a loop.
+     */
+    void roomRepeated(int object, String name, String command) {
+        if (!autoMap.get()) return;
+        String dir = MapView.directionName(command);
+        if (dir == null) return;
+        if (activeMap == null || !activeMap.contains(object)) {
+            for (Map.Entry<Tab, MapView> e : maps.entrySet()) {
+                if (e.getValue().contains(object)) {
+                    activeMap = e.getValue();
+                    if (mapTabs.getTabs().contains(e.getKey())) mapTabs.getSelectionModel().select(e.getKey());
+                    break;
+                }
+            }
+        }
+        if (activeMap != null && activeMap.contains(object) && activeMap.autoLoop(object, dir)) {
+            saveSoon.playFromStart();
+        }
+    }
+
+    /**
      * Before a move is mapped: a room that isn't on the selected map yet is only added there if the
      * room the player came from is on it too. Otherwise the first map that has that room is
      * selected (its inner tab, if there are several) and the new room goes onto that map instead,
@@ -548,14 +573,12 @@ final class SidePanel extends TabPane {
      * or any word typed in; left blank, the loop has no label.
      */
     private void addLoop(MapView map, int object, String name) {
-        ComboBox<String> dir = new ComboBox<>();
-        for (String[] d : DIRECTIONS) dir.getItems().add(d[0]);
-        dir.setEditable(true);
-        dir.setVisibleRowCount(12);
-        dir.setPromptText("e.g. n, up, wait");
+        DirectionsField dir = new DirectionsField(null);
+        dir.text.setPromptText("e.g. n, up, wait");
 
-        HBox row = new HBox(10, new Label("Direction:"), dir);
-        row.setAlignment(Pos.CENTER_LEFT);
+        HBox line = new HBox(10, new Label("Directions:"), dir);
+        line.setAlignment(Pos.CENTER_LEFT);
+        javafx.scene.layout.VBox row = new javafx.scene.layout.VBox(8, line, DirectionsField.hint());
         row.setPadding(new Insets(10, 0, 0, 0));
 
         Dialog<ButtonType> dialog = Styles.dialog(new Dialog<>());
@@ -564,12 +587,10 @@ final class SidePanel extends TabPane {
         dialog.setHeaderText("Add a connection from “" + name + "” back to itself:");
         dialog.getDialogPane().setContent(row);
         dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
-        Platform.runLater(dir::requestFocus);
+        Platform.runLater(dir.text::requestFocus);
 
         if (dialog.showAndWait().orElse(ButtonType.CANCEL) != ButtonType.OK) return;
-        String text = dir.getEditor().getText();      // what is typed, even if not picked from the list
-        text = text == null ? "" : text.replace('\n', ' ').strip();
-        map.addLoop(object, text.isEmpty() ? null : text);
+        map.addLoop(object, dir.value());
     }
 
     /**
@@ -626,20 +647,11 @@ final class SidePanel extends TabPane {
      * the way back until that is chosen by hand.
      */
     private void editConnection(MapView map, MapView.LinkEdit edit, boolean create) {
-        ComboBox<String> there = labelCombo(edit.dirA()), back = labelCombo(edit.dirB());
+        DirectionsField there = new DirectionsField(edit.dirA()), back = new DirectionsField(edit.dirB());
         if (create) {
-            boolean[] backTouched = {false};
-            back.getEditor().textProperty().addListener((o, a, t) -> {
-                if (back.getEditor().isFocused()) backTouched[0] = true;
-            });
-            back.setOnAction(e -> {
-                if (back.isFocused() || back.isShowing()) backTouched[0] = true;
-            });
-            there.valueProperty().addListener((o, a, dir) -> {
-                if (backTouched[0]) return;
-                String opposite = "";
-                for (String[] d : DIRECTIONS) if (d[0].equals(dir)) opposite = d[1];
-                back.getEditor().setText(opposite);
+            // the way back follows the way there (each direction's opposite) until it is edited
+            there.text.textProperty().addListener((o, a, t) -> {
+                if (!back.touched) back.setAuto(DirectionsField.opposites(t));
             });
         }
         javafx.scene.layout.GridPane grid = new javafx.scene.layout.GridPane();
@@ -647,11 +659,12 @@ final class SidePanel extends TabPane {
         grid.setVgap(8);
         grid.setPadding(new Insets(10, 0, 0, 0));
         if (edit.loop()) {
-            grid.addRow(0, new Label("Direction:"), there);
+            grid.addRow(0, new Label("Directions:"), there);
         } else {
             grid.addRow(0, new Label("From “" + edit.aName() + "” to “" + edit.bName() + "”:"), there);
             grid.addRow(1, new Label("From “" + edit.bName() + "” to “" + edit.aName() + "”:"), back);
         }
+        grid.add(DirectionsField.hint(), 0, 2, 2, 1);
 
         Dialog<ButtonType> dialog = Styles.dialog(new Dialog<>());
         if (getScene() != null) dialog.initOwner(getScene().getWindow());
@@ -663,30 +676,82 @@ final class SidePanel extends TabPane {
                 : "The connection between “" + edit.aName() + "” and “" + edit.bName() + "”:");
         dialog.getDialogPane().setContent(grid);
         dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
-        Platform.runLater(there::requestFocus);
+        Platform.runLater(there.text::requestFocus);
 
         if (dialog.showAndWait().orElse(ButtonType.CANCEL) != ButtonType.OK) return;
-        if (create) map.connect(edit.a(), edit.b(), label(there), label(back));
-        else map.setLinkLabels(edit.a(), edit.b(), label(there), edit.loop() ? null : label(back));
+        if (create) map.connect(edit.a(), edit.b(), there.value(), back.value());
+        else map.setLinkLabels(edit.a(), edit.b(), there.value(), edit.loop() ? null : back.value());
     }
 
-    /** An editable list of directions starting at {@code value} (blank for none). */
-    private static ComboBox<String> labelCombo(String value) {
-        ComboBox<String> c = new ComboBox<>();
-        for (String[] d : DIRECTIONS) c.getItems().add(d[0]);
-        c.setEditable(true);
-        c.setVisibleRowCount(12);
-        c.setPromptText("none");
-        c.setValue(value);
-        c.getEditor().setText(value == null ? "" : value);
-        return c;
-    }
+    /**
+     * One end of a connection: the directions that lead that way, typed in or added from the
+     * Add ▾ menu, separated by "/" ("n/e"). Any word can be typed; blank means no label.
+     */
+    private static final class DirectionsField extends HBox {
+        final TextField text = new TextField();
+        /** True once the user has changed this field (so it is no longer filled in automatically). */
+        boolean touched;
+        private boolean filling;
 
-    /** What is typed in an editable combo, even if not picked from its list; blank means none. */
-    private static String label(ComboBox<String> c) {
-        String text = c.getEditor().getText();
-        text = text == null ? "" : text.replace('\n', ' ').strip();
-        return text.isEmpty() ? null : text;
+        DirectionsField(String value) {
+            super(6);
+            setAlignment(Pos.CENTER_LEFT);
+            text.setText(value == null ? "" : value);
+            text.setPromptText("none");
+            text.setPrefColumnCount(12);
+            text.textProperty().addListener((o, a, t) -> { if (!filling) touched = true; });
+            javafx.scene.control.MenuButton add = new javafx.scene.control.MenuButton("Add");
+            for (String[] d : DIRECTIONS) {
+                MenuItem mi = new MenuItem(d[0]);
+                mi.setOnAction(e -> {
+                    String l = MapView.withDirection(value(), d[0]);
+                    if (l != null) text.setText(l);
+                });
+                add.getItems().add(mi);
+            }
+            add.setTooltip(new Tooltip("Add another direction that leads this way"));
+            getChildren().addAll(text, add);
+        }
+
+        /** Fill in without counting as the user's edit. */
+        void setAuto(String value) {
+            filling = true;
+            text.setText(value);
+            filling = false;
+        }
+
+        /** The label: directions joined by "/" (spaces round the slashes dropped); null if blank. */
+        String value() {
+            String t = text.getText() == null ? "" : text.getText().replace('\n', ' ');
+            t = t.replaceAll("\\s*[/,]\\s*", "/").replaceAll("/{2,}", "/").strip();
+            if (t.startsWith("/")) t = t.substring(1);
+            if (t.endsWith("/")) t = t.substring(0, t.length() - 1);
+            t = t.strip();
+            return t.isEmpty() ? null : t;
+        }
+
+        /** Each known direction in {@code label} turned round ("n/e" gives "s/w"); others are dropped. */
+        static String opposites(String label) {
+            StringBuilder sb = new StringBuilder();
+            for (String part : (label == null ? "" : label).split("\\s*[/,]\\s*")) {
+                for (String[] d : DIRECTIONS) {
+                    if (d[0].equalsIgnoreCase(part.strip())) {
+                        if (sb.length() > 0) sb.append('/');
+                        sb.append(d[1]);
+                    }
+                }
+            }
+            return sb.toString();
+        }
+
+        static Label hint() {
+            Label l = new Label("Several directions can lead the same way: separate them with / "
+                    + "(e.g. n/e), or use Add.");
+            l.setWrapText(true);
+            l.setMaxWidth(420);
+            l.setOpacity(0.75);
+            return l;
+        }
     }
 
     /**

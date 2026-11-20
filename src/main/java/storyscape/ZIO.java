@@ -67,6 +67,13 @@ public interface ZIO {
      */
     default void locationChanged(int object, String name, boolean travelled) {}
 
+    /**
+     * The player is still in {@code object} after a turn that printed the room's name again in the
+     * story window, as games do on arriving in a room (or for LOOK). If the command was a movement,
+     * the exit led back into the same room.
+     */
+    default void roomRepeated(int object, String name) {}
+
     /** Extra IFF chunks (4-character id to contents) to store in a saved game. */
     default Map<String, byte[]> extraSaveChunks() { return Map.of(); }
 

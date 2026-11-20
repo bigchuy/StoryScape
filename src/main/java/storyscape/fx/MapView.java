@@ -2,6 +2,7 @@ package storyscape.fx;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Set;
@@ -548,6 +549,30 @@ final class MapView extends ScrollPane {
         relayout();
     }
 
+    /**
+     * Auto Map: going {@code dir} from {@code object} led straight back into it. Adds a loop to the
+     * room (unselected), or adds {@code dir} to its label if the loop is there already: one room
+     * has one loop, so a second looping exit makes a label such as "n/e".
+     * @return true if the map changed
+     */
+    boolean autoLoop(int object, String dir) {
+        if (dir == null || !rooms.containsKey(object)) return false;
+        Link loop = links.get(linkKey(object, object));
+        if (loop == null) {
+            loop = new Link(object, object);
+            loop.dirA = dir;
+            links.put(linkKey(object, object), loop);
+        } else {
+            String l = withDirection(loop.dirA, dir);
+            if (l == null) return false;              // already noted
+            loop.dirA = l;
+        }
+        current = object;
+        relayout();
+        scrollToCurrent();
+        return true;
+    }
+
     /** Remove rooms from this map with every connection that touches them. */
     void deleteRooms(List<Integer> objects) {
         Set<Integer> gone = new LinkedHashSet<>(objects);
@@ -792,9 +817,14 @@ final class MapView extends ScrollPane {
         if (travelled && from != null) {
             Link link = links.computeIfAbsent(linkKey(from.object, object),
                     k -> new Link(Math.min(from.object, object), Math.max(from.object, object)));
-            if (dir != null) {
-                if (link.a == from.object && link.dirA == null) link.dirA = dir;
-                else if (link.b == from.object && link.dirB == null) link.dirB = dir;
+            if (dir != null) {                // several exits can lead to the same room: "n/e"
+                if (link.a == from.object) {
+                    String l = withDirection(link.dirA, dir);
+                    if (l != null) link.dirA = l;
+                } else {
+                    String l = withDirection(link.dirB, dir);
+                    if (l != null) link.dirB = l;
+                }
             }
         }
         current = object;
@@ -807,6 +837,16 @@ final class MapView extends ScrollPane {
     private static long linkKey(int a, int b) {
         int lo = Math.min(a, b), hi = Math.max(a, b);
         return ((long) lo << 32) | (hi & 0xFFFFFFFFL);
+    }
+
+    /**
+     * A connection end's label lists every direction that leads that way, separated by "/" ("n/e").
+     * Returns {@code label} with {@code dir} added, or null if it is already listed.
+     */
+    static String withDirection(String label, String dir) {
+        if (label == null || label.isBlank()) return dir;
+        if (Arrays.asList(label.split("/")).contains(dir)) return null;
+        return label + "/" + dir;
     }
 
     /** The label for a movement command ("n", "ne", "up", ...), or null if it isn't one. */
@@ -1449,8 +1489,8 @@ final class MapView extends ScrollPane {
                     .append(' ').append(l.bendX).append(' ').append(l.bendY)
                     .append(' ').append(l.offAx).append(' ').append(l.offAy)
                     .append(' ').append(l.offBx).append(' ').append(l.offBy)
-                    .append(' ').append(l.dirA == null ? "-" : l.dirA)
-                    .append(' ').append(l.dirB == null ? "-" : l.dirB).append('\n');
+                    .append(' ').append(l.dirA == null ? "-" : l.dirA.replace(' ', '_'))   // one word each
+                    .append(' ').append(l.dirB == null ? "-" : l.dirB.replace(' ', '_')).append('\n');
         }
         if (current >= 0) sb.append("C ").append(current).append('\n');
         sb.append("Z ").append(zoom.get()).append('\n');
@@ -1497,8 +1537,8 @@ final class MapView extends ScrollPane {
                         l.offAy = Double.parseDouble(p[6]);
                         l.offBx = Double.parseDouble(p[7]);
                         l.offBy = Double.parseDouble(p[8]);
-                        l.dirA = p[9].equals("-") ? null : p[9];
-                        l.dirB = p[10].equals("-") ? null : p[10];
+                        l.dirA = p[9].equals("-") ? null : p[9].replace('_', ' ');
+                        l.dirB = p[10].equals("-") ? null : p[10].replace('_', ' ');
                         links.put(linkKey(l.a, l.b), l);
                     }
                     case "E" -> {

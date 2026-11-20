@@ -20,9 +20,15 @@ final class MapHelpDialog {
                     + "line to the room you came from.",
             "The direction you typed (n, se, up, in…) is written beside the line, next to the room it "
                     + "leads out of.",
+            "When more than one exit leads to the same room (say both north and east), each "
+                    + "direction you use is added to the line's label, written n/e.",
             "New rooms are placed by compass direction (north is up, east is right) when there is "
                     + "space; otherwise they go in the nearest free spot.",
             "The room you are in is highlighted.",
+            "If a move brings you straight back into the same room (the game shows the room again), "
+                    + "Auto Map draws a small loop on it labelled with that direction. Another exit "
+                    + "that loops back is added to the same label, e.g. “n/e”. A blocked exit "
+                    + "(“You can't go that way”) adds nothing.",
             "Untick Auto Map to stop adding rooms and lines, for example while wandering a maze. "
                     + "Rooms already on a map are still highlighted when you enter them.",
             "No line is drawn after Restart, Restore or Undo, since you didn't walk there.",
@@ -41,8 +47,9 @@ final class MapHelpDialog {
                     + "Room, or right-click a line, loop or label and choose Delete Connection "
                     + "(Delete Loop). Deleting a room deletes its connections too.",
             "To change a connection's direction labels, untick Auto Map, right-click the line, "
-                    + "loop or one of its labels and choose Edit Connection… (Edit Loop…). Pick a "
-                    + "direction or type any word; leave it blank for no label."},
+                    + "loop or one of its labels and choose Edit Connection… (Edit Loop…). Type "
+                    + "directions or any words, separating several with / (n/e), or pick them "
+                    + "from the Add menu; leave it blank for no label."},
         {"Arranging rooms and lines",
             "Drag a room to move it.",
             "Click a room to select it. Shift-click or Ctrl-click (Cmd-click on a Mac) adds a room "
